@@ -42,6 +42,8 @@ type Observer interface {
 	Sent(channel string, endToEnd time.Duration)
 	Failed(channel, reason string)
 	RateLimitWait(channel string, d time.Duration)
+	// BreakerState reports a circuit breaker change: 0 closed, 1 open, 2 half open.
+	BreakerState(channel string, state int)
 }
 
 // NopObserver ignores every event.
@@ -51,30 +53,35 @@ func (NopObserver) Attempt(string, provider.Class, time.Duration) {}
 func (NopObserver) Sent(string, time.Duration)                    {}
 func (NopObserver) Failed(string, string)                         {}
 func (NopObserver) RateLimitWait(string, time.Duration)           {}
+func (NopObserver) BreakerState(string, int)                      {}
 
 // Settings tunes the engine. Zero values fall back to the spec defaults.
 type Settings struct {
-	Concurrency     int // sender slots per channel
-	ClaimBatch      int // most rows one Claim may take
-	ShutdownTimeout time.Duration
-	ReaperInterval  time.Duration
-	MaxDeliveryAge  time.Duration
-	IdleMin         time.Duration
-	IdleMax         time.Duration
-	Policy          Policy
+	Concurrency      int // sender slots per channel
+	ClaimBatch       int // most rows one Claim may take
+	ShutdownTimeout  time.Duration
+	ReaperInterval   time.Duration
+	MaxDeliveryAge   time.Duration
+	IdleMin          time.Duration
+	IdleMax          time.Duration
+	Policy           Policy
+	BreakerThreshold int           // consecutive Retryable results that open the breaker
+	BreakerOpenFor   time.Duration // how long an open breaker stops claiming
 }
 
 // DefaultSettings returns the spec defaults.
 func DefaultSettings() Settings {
 	return Settings{
-		Concurrency:     10,
-		ClaimBatch:      20,
-		ShutdownTimeout: 15 * time.Second,
-		ReaperInterval:  5 * time.Second,
-		MaxDeliveryAge:  24 * time.Hour,
-		IdleMin:         200 * time.Millisecond,
-		IdleMax:         time.Second,
-		Policy:          DefaultPolicy(),
+		Concurrency:      10,
+		ClaimBatch:       20,
+		ShutdownTimeout:  15 * time.Second,
+		ReaperInterval:   5 * time.Second,
+		MaxDeliveryAge:   24 * time.Hour,
+		IdleMin:          200 * time.Millisecond,
+		IdleMax:          time.Second,
+		Policy:           DefaultPolicy(),
+		BreakerThreshold: 10,
+		BreakerOpenFor:   30 * time.Second,
 	}
 }
 
@@ -94,6 +101,12 @@ func (s Settings) withDefaults() Settings {
 	}
 	if s.MaxDeliveryAge <= 0 {
 		s.MaxDeliveryAge = d.MaxDeliveryAge
+	}
+	if s.BreakerThreshold < 1 {
+		s.BreakerThreshold = d.BreakerThreshold
+	}
+	if s.BreakerOpenFor <= 0 {
+		s.BreakerOpenFor = d.BreakerOpenFor
 	}
 	if s.IdleMin <= 0 {
 		s.IdleMin = d.IdleMin
@@ -124,6 +137,7 @@ type Engine struct {
 	rnd      func() float64
 	now      func() time.Time
 	channels []domain.Channel
+	brk      map[domain.Channel]*breaker
 }
 
 // Option customizes an Engine.
@@ -187,6 +201,10 @@ func New(q Queue, s Sender, l Limiter, set Settings, opts ...Option) *Engine {
 	}
 	for _, o := range opts {
 		o(e)
+	}
+	e.brk = make(map[domain.Channel]*breaker, len(e.channels))
+	for _, ch := range e.channels {
+		e.brk[ch] = newBreaker(e.set.BreakerThreshold, e.set.BreakerOpenFor, e.now, e.breakerChanged(ch))
 	}
 	return e
 }
@@ -258,4 +276,21 @@ func newToken() string {
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// breakerChanged returns the state change callback of one channel's breaker:
+// it updates the gauge and logs the transition (channel and count only).
+func (e *Engine) breakerChanged(ch domain.Channel) func(state, failures int) {
+	name := string(ch)
+	return func(state, failures int) {
+		e.obs.BreakerState(name, state)
+		switch state {
+		case breakerOpen:
+			e.log.Warn("circuit breaker opened", "channel", name, "failures", failures)
+		case breakerHalfOpen:
+			e.log.Info("circuit breaker half open", "channel", name, "failures", failures)
+		default:
+			e.log.Info("circuit breaker closed", "channel", name, "failures", failures)
+		}
+	}
 }

@@ -137,3 +137,40 @@ func TestLoadWorkerRejectsBadValuesNamingVariableOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadBreakerDefaultsAndOverrides(t *testing.T) {
+	c, err := config.Load(env(baseEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.BreakerThreshold != 10 || c.BreakerOpenFor != 30*time.Second {
+		t.Fatalf("breaker defaults wrong: %d %v", c.BreakerThreshold, c.BreakerOpenFor)
+	}
+	m := baseEnv()
+	m["BREAKER_THRESHOLD"] = "3"
+	m["BREAKER_OPEN_FOR"] = "5s"
+	c, err = config.Load(env(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.BreakerThreshold != 3 || c.BreakerOpenFor != 5*time.Second {
+		t.Fatalf("breaker overrides wrong: %d %v", c.BreakerThreshold, c.BreakerOpenFor)
+	}
+}
+
+func TestLoadBreakerRejectsBadValuesNamingVariableOnly(t *testing.T) {
+	cases := map[string][]string{
+		"BREAKER_THRESHOLD": {"many-secret", "0", "-1"},
+		"BREAKER_OPEN_FOR":  {"soon-secret", "0s", "-5s"},
+	}
+	for name, bads := range cases {
+		for _, bad := range bads {
+			m := baseEnv()
+			m[name] = bad
+			_, err := config.Load(env(m))
+			if err == nil || !contains(err.Error(), name) || contains(err.Error(), bad) {
+				t.Errorf("%s=%q: want error naming the variable and not the value, got %v", name, bad, err)
+			}
+		}
+	}
+}

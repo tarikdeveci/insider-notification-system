@@ -289,3 +289,20 @@ func TestQueueDepthGaugeStatesReadyScheduledProcessing(t *testing.T) {
 		t.Fatalf("refresh missing: calls=%d", counting.n)
 	}
 }
+
+func TestBreakerStateMetric(t *testing.T) {
+	wm := observability.NewWorkerMetrics(prometheus.NewRegistry())
+	series := func(ch string) string { return `circuit_breaker_state{channel="` + ch + `"}` }
+	for _, step := range []int{0, 1, 2, 0} {
+		wm.BreakerState("sms", step)
+		out := scrape(t, wm.Handler())
+		if got := mustSample(t, out, series("sms")); got != float64(step) {
+			t.Fatalf("after BreakerState(sms, %d) gauge = %v", step, got)
+		}
+		for _, other := range []string{"email", "push"} {
+			if got := mustSample(t, out, series(other)); got != 0 {
+				t.Fatalf("%s gauge = %v, want 0 (channels are independent)", other, got)
+			}
+		}
+	}
+}

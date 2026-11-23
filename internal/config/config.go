@@ -28,6 +28,8 @@ type Config struct {
 	MaxDeliveryAge    time.Duration // MAX_DELIVERY_AGE, default 24h
 	ShutdownTimeout   time.Duration // SHUTDOWN_TIMEOUT, default 15s
 	ReaperInterval    time.Duration // REAPER_INTERVAL, default 5s
+	BreakerThreshold  int           // BREAKER_THRESHOLD, default 10
+	BreakerOpenFor    time.Duration // BREAKER_OPEN_FOR, default 30s
 }
 
 // Load reads configuration through getenv (os.Getenv in production). An empty
@@ -60,6 +62,9 @@ func Load(getenv func(string) string) (Config, error) {
 	if c.ClaimBatch, err = positiveInt(getenv, "CLAIM_BATCH", 20); err != nil {
 		return Config{}, err
 	}
+	if c.BreakerThreshold, err = positiveInt(getenv, "BREAKER_THRESHOLD", 10); err != nil {
+		return Config{}, err
+	}
 	durations := []struct {
 		dst  *time.Duration
 		name string
@@ -71,6 +76,7 @@ func Load(getenv func(string) string) (Config, error) {
 		{&c.MaxDeliveryAge, "MAX_DELIVERY_AGE", 24 * time.Hour},
 		{&c.ShutdownTimeout, "SHUTDOWN_TIMEOUT", 15 * time.Second},
 		{&c.ReaperInterval, "REAPER_INTERVAL", 5 * time.Second},
+		{&c.BreakerOpenFor, "BREAKER_OPEN_FOR", 30 * time.Second},
 	}
 	for _, d := range durations {
 		if *d.dst, err = positiveDuration(getenv, d.name, d.def); err != nil {

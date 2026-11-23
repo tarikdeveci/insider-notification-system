@@ -88,6 +88,8 @@ services:
       MAX_DELIVERY_AGE: ${MAX_DELIVERY_AGE:-24h}
       SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-15s}
       REAPER_INTERVAL: ${REAPER_INTERVAL:-5s}
+      BREAKER_THRESHOLD: ${BREAKER_THRESHOLD:-10}
+      BREAKER_OPEN_FOR: ${BREAKER_OPEN_FOR:-30s}
     depends_on:
       migrate:
         condition: service_completed_successfully

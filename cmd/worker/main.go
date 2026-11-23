@@ -78,12 +78,14 @@ func run() int {
 	st := store.New(pool)
 	lim := ratelimit.New(rdb, ratelimit.WithMaxWait(cfg.RateLimitMaxWait))
 	engine := worker.New(st, prov, lim, worker.Settings{
-		Concurrency:     cfg.WorkerConcurrency,
-		ClaimBatch:      cfg.ClaimBatch,
-		ShutdownTimeout: cfg.ShutdownTimeout,
-		ReaperInterval:  cfg.ReaperInterval,
-		MaxDeliveryAge:  cfg.MaxDeliveryAge,
-		Policy:          worker.Policy{Base: cfg.RetryBaseDelay, Cap: cfg.RetryMaxDelay, MaxAge: cfg.MaxDeliveryAge},
+		Concurrency:      cfg.WorkerConcurrency,
+		ClaimBatch:       cfg.ClaimBatch,
+		ShutdownTimeout:  cfg.ShutdownTimeout,
+		ReaperInterval:   cfg.ReaperInterval,
+		MaxDeliveryAge:   cfg.MaxDeliveryAge,
+		Policy:           worker.Policy{Base: cfg.RetryBaseDelay, Cap: cfg.RetryMaxDelay, MaxAge: cfg.MaxDeliveryAge},
+		BreakerThreshold: cfg.BreakerThreshold,
+		BreakerOpenFor:   cfg.BreakerOpenFor,
 	}, worker.WithLogger(log), worker.WithObserver(metrics))
 
 	srv := &http.Server{

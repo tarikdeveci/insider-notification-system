@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -84,6 +85,19 @@ type recObserver struct {
 	sent     int
 	failed   []string
 	waits    int
+	states   []string
+}
+
+func (o *recObserver) BreakerState(ch string, state int) {
+	o.mu.Lock()
+	o.states = append(o.states, fmt.Sprintf("%s:%d", ch, state))
+	o.mu.Unlock()
+}
+
+func (o *recObserver) stateList() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.states...)
 }
 
 func (o *recObserver) Attempt(ch string, c provider.Class, d time.Duration) {

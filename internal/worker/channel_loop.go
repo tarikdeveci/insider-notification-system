@@ -24,6 +24,7 @@ const (
 	releaseWaitExceeded = "ratelimit_wait_exceeded"
 	releaseLimiterError = "ratelimit_error"
 	releaseShutdown     = "shutdown"
+	releaseBreakerOpen  = "breaker_open"
 )
 
 // nextIdle doubles the idle wait up to max.
@@ -46,11 +47,31 @@ func (e *Engine) channelLoop(ctx, drain context.Context, ch domain.Channel) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
+	brk := e.brk[ch]
 	idle := e.set.IdleMin
 	for {
+		if !e.pauseWhileOpen(ctx, brk) {
+			return
+		}
 		n, ok := takeSlots(ctx, slots, limit)
 		if !ok {
 			return
+		}
+		// Waiting for a slot can outlast a breaker opening: decide again with slots in hand.
+		mode, wait := brk.gate()
+		if mode == gateNone {
+			for i := 0; i < n; i++ {
+				<-slots
+			}
+			if !sleep(ctx, e.breakerPause(wait)) {
+				return
+			}
+			continue
+		}
+		if mode == gateOne {
+			for ; n > 1; n-- {
+				<-slots
+			}
 		}
 		rows, err := e.q.Claim(ctx, ch, n, newToken())
 		for i := len(rows); i < n; i++ {
@@ -123,6 +144,13 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, row store
 		log = log.With("batch_id", *row.BatchID)
 	}
 
+	brk := e.brk[row.Channel]
+	if mode, _ := brk.gate(); mode == gateNone {
+		// Claimed just before the breaker opened: do not wait for a permit it will not use.
+		e.release(ctx, log, row, releaseBreakerOpen)
+		return
+	}
+
 	waited, err := e.lim.Acquire(ctx, ch)
 	if err == nil && ctx.Err() != nil {
 		err = ctx.Err() // admitted just as shutdown began: do not start a send
@@ -142,6 +170,13 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, row store
 		return
 	}
 	e.obs.RateLimitWait(ch, waited)
+
+	tk, admitted := brk.admit()
+	if !admitted {
+		e.release(ctx, log, row, releaseBreakerOpen)
+		return
+	}
+	defer tk.abort() // a no-op once the send is recorded; frees a probe slot on every other exit
 
 	// StartAttempt runs on the run ctx: once shutdown begins no new attempt may start.
 	attempt, startedAt, err := e.q.StartAttempt(ctx, row.ID, row.LeaseToken)
@@ -163,6 +198,7 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, row store
 
 	began := e.now()
 	res := e.sender.Send(drain, provider.Message{ID: row.ID, To: row.Recipient, Channel: ch, Content: row.Content})
+	tk.record(res.Class)
 	e.obs.Attempt(ch, res.Class, e.now().Sub(began))
 
 	out := e.set.Policy.Decide(Input{
@@ -228,4 +264,27 @@ func truncateRunes(s string, n int) string {
 		return string(r[:n])
 	}
 	return s
+}
+
+// breakerPause is how long a closed gate sleeps before the next look: the
+// time left of the open period, bounded by IdleMax (zero wait means a probe is in flight).
+func (e *Engine) breakerPause(wait time.Duration) time.Duration {
+	if wait > 0 {
+		return min(wait, e.set.IdleMax)
+	}
+	return e.set.IdleMax
+}
+
+// pauseWhileOpen sleeps while the breaker forbids claiming and reports false
+// when ctx ended.
+func (e *Engine) pauseWhileOpen(ctx context.Context, brk *breaker) bool {
+	for {
+		mode, wait := brk.gate()
+		if mode != gateNone {
+			return ctx.Err() == nil
+		}
+		if !sleep(ctx, e.breakerPause(wait)) {
+			return false
+		}
+	}
 }

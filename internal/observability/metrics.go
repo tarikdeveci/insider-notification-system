@@ -91,11 +91,12 @@ type WorkerMetrics struct {
 	e2e      *prometheus.HistogramVec
 	rlWait   *prometheus.HistogramVec
 	unparsed prometheus.Counter
+	breaker  *prometheus.GaugeVec
 }
 
 // NewWorkerMetrics registers the worker series and the Go and process
-// collectors on reg. circuit_breaker_state is fixed at 0 (closed) per channel
-// because the breaker is a tier 2 feature.
+// collectors on reg. circuit_breaker_state starts at 0 (closed) per channel
+// and follows BreakerState.
 func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 	m := &WorkerMetrics{
 		reg: reg,
@@ -124,13 +125,13 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 			Name: "provider_unparsed_body_total", Help: "2xx provider responses whose body could not be parsed.",
 		}),
 	}
-	breaker := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	m.breaker = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "circuit_breaker_state", Help: "Circuit breaker state per channel (0 closed, 1 open, 2 half open).",
 	}, []string{"channel"})
 	for _, ch := range allChannels {
-		breaker.WithLabelValues(string(ch)).Set(0)
+		m.breaker.WithLabelValues(string(ch)).Set(0)
 	}
-	reg.MustRegister(m.sent, m.failed, m.attempts, m.provider, m.e2e, m.rlWait, m.unparsed, breaker)
+	reg.MustRegister(m.sent, m.failed, m.attempts, m.provider, m.e2e, m.rlWait, m.unparsed, m.breaker)
 	registerRuntime(reg)
 	return m
 }
@@ -250,4 +251,10 @@ func (c *depthCollector) refresh() {
 		v[depthKey{r.Channel, r.Priority, r.State}] = r.Count
 	}
 	c.values = v
+}
+
+// BreakerState sets the circuit_breaker_state gauge of one channel
+// (0 closed, 1 open, 2 half open).
+func (m *WorkerMetrics) BreakerState(channel string, state int) {
+	m.breaker.WithLabelValues(channel).Set(float64(state))
 }
