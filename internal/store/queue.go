@@ -43,7 +43,9 @@ type QueueRow struct {
 	LeaseToken    string
 }
 
-const claimSQL = `
+// ClaimSQL is the per priority claim probe: $1 channel, $2 priority, $3 limit, $4 lease token.
+// Exported so the R8 plan test can EXPLAIN the exact statement the worker runs.
+const ClaimSQL = `
 UPDATE notifications
 SET status = 'processing', lease_token = $4::uuid,
     locked_until = now() + interval '30 seconds', updated_at = now()
@@ -67,7 +69,7 @@ func (s *Store) Claim(ctx context.Context, ch domain.Channel, n int, token strin
 	}
 	var out []QueueRow
 	for prio := domain.PriorityHigh; prio <= domain.PriorityLow && len(out) < n; prio++ {
-		rows, err := s.pool.Query(ctx, claimSQL, string(ch), int16(prio), n-len(out), token)
+		rows, err := s.pool.Query(ctx, ClaimSQL, string(ch), int16(prio), n-len(out), token)
 		if err != nil {
 			return nil, fmt.Errorf("claim: %w", err)
 		}

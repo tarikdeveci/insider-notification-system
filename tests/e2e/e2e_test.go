@@ -45,6 +45,12 @@ func TestMain(m *testing.M) {
 			resp.Body.Close()
 			if resp.StatusCode == 200 && ctx.Err() == nil {
 				cancel()
+				if enginePhase() {
+					if err := engineReady(); err != nil {
+						fmt.Fprintln(os.Stderr, "worker not ready:", err)
+						os.Exit(1)
+					}
+				}
 				os.Exit(m.Run())
 			}
 		}
@@ -55,6 +61,18 @@ func TestMain(m *testing.M) {
 	}
 	fmt.Fprintln(os.Stderr, "api not ready within 90s")
 	os.Exit(1)
+}
+
+// enginePhase reports whether this run is the engine phase (E2E_PHASE=engine).
+// The API phase (empty or "api") runs with the worker stopped.
+func enginePhase() bool { return os.Getenv("E2E_PHASE") == "engine" }
+
+// needAPIPhase skips API flow tests during the engine phase.
+func needAPIPhase(t *testing.T) {
+	t.Helper()
+	if enginePhase() {
+		t.Skip("API flow test: runs in the API phase with the worker stopped")
+	}
 }
 
 func uniq() string {
@@ -97,6 +115,7 @@ func sms(content string) string {
 }
 
 func TestCreateGetListCancel(t *testing.T) {
+	needAPIPhase(t)
 	code, _, n := call(t, "POST", "/v1/notifications", sms("e2e "+uniq()), nil)
 	if code != 201 || n["status"] != "pending" {
 		t.Fatalf("create: %d %v", code, n)
@@ -118,6 +137,7 @@ func TestCreateGetListCancel(t *testing.T) {
 }
 
 func TestIdempotentReplayAndConflict(t *testing.T) {
+	needAPIPhase(t)
 	key := map[string]string{"Idempotency-Key": "e2e-" + uniq()}
 	body := sms("idem " + uniq())
 	c1, _, a := call(t, "POST", "/v1/notifications", body, key)
@@ -131,6 +151,7 @@ func TestIdempotentReplayAndConflict(t *testing.T) {
 }
 
 func TestBatchLifecycle(t *testing.T) {
+	needAPIPhase(t)
 	key := map[string]string{"Idempotency-Key": "e2e-b-" + uniq()}
 	body := `{"notifications":[` + sms("b0") + `,` + sms("b1") + `,` + sms("b2") + `]}`
 	code, _, created := call(t, "POST", "/v1/notifications/batch", body, key)
@@ -157,6 +178,7 @@ func TestBatchLifecycle(t *testing.T) {
 }
 
 func TestValidationIsProblemJSON(t *testing.T) {
+	needAPIPhase(t)
 	code, hdr, m := call(t, "POST", "/v1/notifications", `{"recipient":"x","channel":"sms","content":""}`, nil)
 	if code != 422 || !strings.HasPrefix(hdr.Get("Content-Type"), "application/problem+json") || len(m["errors"].([]any)) < 2 {
 		t.Fatalf("%d %s %v", code, hdr.Get("Content-Type"), m)
@@ -164,6 +186,7 @@ func TestValidationIsProblemJSON(t *testing.T) {
 }
 
 func TestRequestIDEcho(t *testing.T) {
+	needAPIPhase(t)
 	_, hdr, _ := call(t, "GET", "/healthz", "", map[string]string{"X-Request-ID": "e2e-id-1"})
 	if hdr.Get("X-Request-ID") != "e2e-id-1" {
 		t.Fatalf("got %q", hdr.Get("X-Request-ID"))

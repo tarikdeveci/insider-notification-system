@@ -20,5 +20,9 @@ down:
 	docker compose down -v
 
 e2e:
-	docker compose up -d --build
-	go test -race -tags e2e -count=1 ./tests/e2e/...; rc=$$?; docker compose down -v; exit $$rc
+	RETRY_BASE_DELAY=200ms RETRY_MAX_DELAY=1s REAPER_INTERVAL=1s docker compose up -d --build; rc=$$?; \
+	if [ $$rc -eq 0 ]; then docker compose stop worker; rc=$$?; fi; \
+	if [ $$rc -eq 0 ]; then E2E_PHASE=api go test -race -tags e2e -count=1 ./tests/e2e/...; rc=$$?; fi; \
+	if [ $$rc -eq 0 ]; then docker compose start worker; rc=$$?; fi; \
+	if [ $$rc -eq 0 ]; then E2E_PHASE=engine go test -race -tags e2e -count=1 ./tests/e2e/...; rc=$$?; fi; \
+	docker compose down -v; exit $$rc
