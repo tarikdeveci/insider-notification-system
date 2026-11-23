@@ -1,0 +1,12 @@
+.env
+.superpowers/
+*.exe
+*.out
+*.test
+coverage.*
+cover.out
+/bin/
+/api-bin
+/worker-bin
+.idea/
+.vscode/
