@@ -190,6 +190,32 @@ func TestQueueDepthKeepsLastValuesOnError(t *testing.T) {
 	}
 }
 
+// Before the first successful refresh there are no real values, so queue_depth
+// is absent rather than a run of zeros that would read as an empty queue during
+// a database outage. After recovery all 27 combinations appear.
+func TestQueueDepthAbsentUntilFirstSuccessfulRefresh(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	src := &fakeDepth{err: errors.New("db down"),
+		rows: []store.DepthRow{{Channel: domain.ChannelPush, Priority: domain.PriorityHigh, State: "processing", Count: 2}}}
+	now := time.Unix(1000, 0)
+	observability.RegisterQueueDepth(reg, src, discard(), observability.WithDepthClock(func() time.Time { return now }))
+	h := observability.Handler(reg)
+	if out := scrape(t, h); hasSeries(out, "queue_depth") {
+		t.Fatal("queue_depth emitted before any successful refresh")
+	}
+	src.mu.Lock()
+	src.err = nil
+	src.mu.Unlock()
+	now = now.Add(6 * time.Second)
+	out := scrape(t, h)
+	if n := strings.Count(out, "\nqueue_depth{"); n != 27 {
+		t.Fatalf("want 27 queue_depth series after recovery, got %d", n)
+	}
+	if v := mustSample(t, out, `queue_depth{channel="push",priority="high",state="processing"}`); v != 2 {
+		t.Fatalf("got %v", v)
+	}
+}
+
 type countingDepth struct {
 	inner *store.Store
 	n     int
