@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +26,11 @@ func newClient(t *testing.T) *redis.Client {
 	rdb := redis.NewClient(opts)
 	t.Cleanup(func() { _ = rdb.Close() })
 	return rdb
+}
+
+// uniqueChannel keeps limiter keys from leaking between repeated runs against the shared test Redis.
+func uniqueChannel(base string) string {
+	return base + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
 type slots struct {
@@ -125,15 +131,17 @@ func TestChannelsAreIndependent(t *testing.T) {
 	var s slots
 	l := ratelimit.New(rdb, ratelimit.WithGrantHook(s.hook))
 	ctx := context.Background()
+	// The 1h interval key outlives the test, so the channel names are unique per run (-count > 1 safe).
+	sms, email := uniqueChannel("ind-sms"), uniqueChannel("ind-email")
 	// Push the sms channel far into the future with a large interval limiter.
 	slow := ratelimit.New(rdb, ratelimit.WithInterval(time.Hour))
-	if _, err := slow.Acquire(ctx, "ind-sms"); err != nil {
+	if _, err := slow.Acquire(ctx, sms); err != nil {
 		t.Fatalf("sms acquire: %v", err)
 	}
-	if _, err := slow.Acquire(ctx, "ind-sms"); !errors.Is(err, ratelimit.ErrWaitExceeded) {
+	if _, err := slow.Acquire(ctx, sms); !errors.Is(err, ratelimit.ErrWaitExceeded) {
 		t.Fatalf("sms should be saturated, got %v", err)
 	}
-	wait, err := l.Acquire(ctx, "ind-email")
+	wait, err := l.Acquire(ctx, email)
 	if err != nil {
 		t.Fatalf("email acquire: %v", err)
 	}
@@ -236,16 +244,19 @@ func TestOversleepingSleeperCannotGrantPastMaxWait(t *testing.T) {
 	rdb := newClient(t)
 	grants := 0
 	oversleep := func(ctx context.Context, d time.Duration) error {
-		time.Sleep(150 * time.Millisecond) // wakes far after the 40ms budget
+		time.Sleep(800 * time.Millisecond) // wakes far after the 500ms budget
 		return nil
 	}
-	l := ratelimit.New(rdb, ratelimit.WithMaxWait(40*time.Millisecond), ratelimit.WithSleep(oversleep),
-		ratelimit.WithGrantHook(func(string, time.Time) { grants++ }))
-	if _, err := l.Acquire(context.Background(), "oversleep"); err != nil {
+	// A 200ms interval leaves wide room for the second call to land inside the first permit's slot even on a slow
+	// host, while the needed wait (under 200ms) still fits the 500ms budget, so the sleeper path really runs.
+	l := ratelimit.New(rdb, ratelimit.WithInterval(200*time.Millisecond), ratelimit.WithMaxWait(500*time.Millisecond),
+		ratelimit.WithSleep(oversleep), ratelimit.WithGrantHook(func(string, time.Time) { grants++ }))
+	ch := uniqueChannel("oversleep")
+	if _, err := l.Acquire(context.Background(), ch); err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
-	// The slot of the first permit is still within its 10ms interval, so this is denied, sleeps long, then must not grant.
-	_, err := l.Acquire(context.Background(), "oversleep")
+	// The slot of the first permit is still within its interval, so this is denied, sleeps long, then must not grant.
+	_, err := l.Acquire(context.Background(), ch)
 	if !errors.Is(err, ratelimit.ErrWaitExceeded) {
 		t.Fatalf("err = %v, want ErrWaitExceeded", err)
 	}
