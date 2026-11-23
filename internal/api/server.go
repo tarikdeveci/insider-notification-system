@@ -1,0 +1,132 @@
+// Package api is the HTTP layer: routing, middleware, problem+json and handlers.
+package api
+
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+
+	"github.com/tarikdeveci/insider-notification-system/internal/store"
+)
+
+// Pinger is a dependency that can report liveness.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
+// RedisPinger adapts a go-redis client to Pinger.
+type RedisPinger struct{ Client *redis.Client }
+
+// Ping returns the result of PING.
+func (p RedisPinger) Ping(ctx context.Context) error { return p.Client.Ping(ctx).Err() }
+
+// Deps are the collaborators the handlers need.
+type Deps struct {
+	Store  *store.Store
+	DB     Pinger
+	Redis  Pinger
+	Logger *slog.Logger
+}
+
+type route struct {
+	pattern string
+	handler http.HandlerFunc
+}
+
+type server struct{ Deps }
+
+func (s *server) routes() []route {
+	return []route{
+		{"GET /healthz", s.healthz},
+		{"GET /readyz", s.readyz},
+	}
+}
+
+// RoutePatterns lists the registered "METHOD /path" patterns.
+func RoutePatterns() []string {
+	var out []string
+	for _, rt := range (&server{}).routes() {
+		out = append(out, rt.pattern)
+	}
+	return out
+}
+
+// NewServer builds the handler: RequestID -> Recover -> AccessLog -> mux.
+func NewServer(d Deps) http.Handler {
+	s := &server{d}
+	mux := http.NewServeMux()
+	for _, rt := range s.routes() {
+		mux.HandleFunc(rt.pattern, rt.handler)
+	}
+	var h http.Handler = problemMux{mux}
+	h = AccessLog(d.Logger)(h)
+	h = Recover(d.Logger)(h)
+	return RequestID(h)
+}
+
+// problemMux renders the mux's own 404 and 405 answers as problem+json,
+// keeping the Allow header on 405. A catch-all route is not used because it
+// would swallow the mux's method matching and hide every 405.
+type problemMux struct{ mux *http.ServeMux }
+
+func (p problemMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h, pattern := p.mux.Handler(r)
+	if pattern != "" {
+		h.ServeHTTP(w, r)
+		return
+	}
+	probe := &probeWriter{header: http.Header{}}
+	h.ServeHTTP(probe, r)
+	switch probe.status {
+	case http.StatusNotFound:
+		writeProblem(w, r, http.StatusNotFound, "no such route", nil)
+	case http.StatusMethodNotAllowed:
+		if allow := probe.header.Get("Allow"); allow != "" {
+			w.Header().Set("Allow", allow)
+		}
+		writeProblem(w, r, http.StatusMethodNotAllowed, "method not allowed", nil)
+	default: // e.g. trailing slash redirects
+		h.ServeHTTP(w, r)
+	}
+}
+
+// probeWriter captures status and headers of the mux's default handlers.
+type probeWriter struct {
+	header http.Header
+	status int
+}
+
+func (p *probeWriter) Header() http.Header         { return p.header }
+func (p *probeWriter) Write(b []byte) (int, error) { return len(b), nil }
+func (p *probeWriter) WriteHeader(code int) {
+	if p.status == 0 {
+		p.status = code
+	}
+}
+
+func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *server) readyz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	check := func(p Pinger) string {
+		if p == nil || p.Ping(ctx) != nil {
+			return "fail"
+		}
+		return "ok"
+	}
+	pg, rd := check(s.DB), check(s.Redis)
+	status, code := "ok", http.StatusOK
+	if pg != "ok" || rd != "ok" {
+		status, code = "degraded", http.StatusServiceUnavailable
+	}
+	writeJSON(w, code, map[string]any{
+		"status": status,
+		"checks": map[string]string{"postgres": pg, "redis": rd},
+	})
+}
