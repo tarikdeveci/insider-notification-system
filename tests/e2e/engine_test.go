@@ -200,9 +200,13 @@ func createNotif(t *testing.T, channel, recipient string) string {
 }
 
 // composeCmd runs `docker compose <args>` from the repo root (no shell).
-func composeCmd(args ...string) error {
+func composeCmd(args ...string) error { return composeEnv(nil, args...) }
+
+// composeEnv is composeCmd with extra environment variables (they override the inherited ones).
+func composeEnv(env []string, args ...string) error {
 	cmd := exec.Command("docker", append([]string{"compose"}, args...)...)
 	cmd.Dir = "../.."
+	cmd.Env = append(os.Environ(), env...)
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
@@ -287,6 +291,22 @@ func Test429DoesNotConsumeAttempts(t *testing.T) {
 	}
 }
 
+// startSingleSenderWorker recreates the worker with one sender per channel (PF15): it drains
+// each claimed batch in claim order, so provider arrival order equals claim order. The cleanup
+// recreates it with the default concurrency again.
+func startSingleSenderWorker(t *testing.T) {
+	t.Helper()
+	up := []string{"up", "-d", "--no-deps", "worker"}
+	t.Cleanup(func() {
+		if err := composeEnv([]string{"WORKER_CONCURRENCY_PER_CHANNEL=10"}, up...); err != nil {
+			t.Errorf("restore worker concurrency: %v", err)
+		}
+	})
+	if err := composeEnv([]string{"WORKER_CONCURRENCY_PER_CHANNEL=1"}, up...); err != nil {
+		t.Fatalf("start single sender worker: %v", err)
+	}
+}
+
 func TestPriorityOrder(t *testing.T) {
 	needEnginePhase(t)
 	mockReset(t)
@@ -303,7 +323,7 @@ func TestPriorityOrder(t *testing.T) {
 		t.Fatalf("batch: %d %v", code, created)
 	}
 	ids := created["notification_ids"].([]any)
-	startWorker(t)
+	startSingleSenderWorker(t)
 	for _, id := range ids {
 		waitStatus(t, id.(string), 60*time.Second, "sent")
 	}
@@ -317,8 +337,8 @@ func TestPriorityOrder(t *testing.T) {
 	if len(mine) < 60 {
 		t.Fatalf("got %d arrivals, want at least 60", len(mine))
 	}
-	// A single worker claims high first; up to 10 in-flight slots can interleave at the boundary.
-	for i, a := range mine[:20] {
+	// One sender per channel: arrival order is claim order, so all 30 high rows precede any low row.
+	for i, a := range mine[:30] {
 		if !strings.HasPrefix(a.To, prefix+"high-") {
 			t.Fatalf("arrival %d went to %s, want a high priority row first", i, strings.TrimPrefix(a.To, prefix))
 		}

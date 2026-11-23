@@ -86,11 +86,8 @@ func TestClaimUsesIndexOnFutureBacklog(t *testing.T) {
 			usesClaimIdx = true
 		}
 		if strings.Contains(n.NodeType, "Scan") {
-			loops := n.ActualLoops
-			if loops < 1 {
-				loops = 1
-			}
-			examined += n.ActualRows*loops + n.RemovedByFilter + n.RemovedRecheck
+			// Postgres reports rows and removals as per-loop averages; loops 0 means never executed.
+			examined += (n.ActualRows + n.RemovedByFilter + n.RemovedRecheck) * n.ActualLoops
 		}
 	})
 	if !usesClaimIdx {
