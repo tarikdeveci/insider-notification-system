@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -29,16 +30,28 @@ func envOr(k, d string) string {
 }
 
 func TestMain(m *testing.M) {
-	probe := &http.Client{Timeout: 2 * time.Second}
 	deadline := time.Now().Add(90 * time.Second)
-	for time.Now().Before(deadline) {
-		if resp, err := probe.Get(base + "/readyz"); err == nil {
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	// Each probe is capped at 2s and never outlives the overall deadline.
+	probe := &http.Client{Timeout: 2 * time.Second}
+	for ctx.Err() == nil {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/readyz", nil)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "bad E2E_BASE_URL:", err)
+			os.Exit(1)
+		}
+		if resp, err := probe.Do(req); err == nil {
 			resp.Body.Close()
-			if resp.StatusCode == 200 {
+			if resp.StatusCode == 200 && ctx.Err() == nil {
+				cancel()
 				os.Exit(m.Run())
 			}
 		}
-		time.Sleep(time.Second)
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Second):
+		}
 	}
 	fmt.Fprintln(os.Stderr, "api not ready within 90s")
 	os.Exit(1)
@@ -67,9 +80,15 @@ func call(t *testing.T, method, path, body string, hdr map[string]string) (int, 
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("%s %s: read body: %v", method, path, err)
+	}
+	// Every endpoint under test answers with a JSON object, so anything else is a failure.
 	var m map[string]any
-	_ = json.NewDecoder(bytes.NewReader(raw)).Decode(&m)
+	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&m); err != nil {
+		t.Fatalf("%s %s: status %d: body is not a JSON object: %v", method, path, resp.StatusCode, err)
+	}
 	return resp.StatusCode, resp.Header, m
 }
 
