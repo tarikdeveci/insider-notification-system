@@ -54,17 +54,20 @@ func RoutePatterns() []string {
 	return out
 }
 
-// NewServer builds the handler: RequestID -> Recover -> AccessLog -> mux.
+// NewServer builds the handler: RequestID -> AccessLog -> Recover -> mux.
 func NewServer(d Deps) http.Handler {
 	s := &server{d}
 	mux := http.NewServeMux()
 	for _, rt := range s.routes() {
 		mux.HandleFunc(rt.pattern, rt.handler)
 	}
-	var h http.Handler = problemMux{mux}
-	h = AccessLog(d.Logger)(h)
-	h = Recover(d.Logger)(h)
-	return RequestID(h)
+	return wrap(d.Logger, problemMux{mux})
+}
+
+// wrap applies the middleware chain. Recover sits inside AccessLog so a
+// recovered panic still produces exactly one access record, with status 500.
+func wrap(log *slog.Logger, h http.Handler) http.Handler {
+	return RequestID(AccessLog(log)(Recover(log)(h)))
 }
 
 // problemMux renders the mux's own 404 and 405 answers as problem+json,
@@ -75,7 +78,8 @@ type problemMux struct{ mux *http.ServeMux }
 func (p problemMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h, pattern := p.mux.Handler(r)
 	if pattern != "" {
-		h.ServeHTTP(w, r)
+		// Dispatch through the mux itself so it populates PathValue.
+		p.mux.ServeHTTP(w, r)
 		return
 	}
 	probe := &probeWriter{header: http.Header{}}
