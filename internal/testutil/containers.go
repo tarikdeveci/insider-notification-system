@@ -87,12 +87,12 @@ func PostgresDSN(t testing.TB) string {
 		defer cancel()
 		conn, err := pgx.Connect(ctx, pgBase)
 		if err != nil {
-			t.Logf("drop database: connect: %v", err)
+			t.Errorf("drop database: connect: %v", err)
 			return
 		}
 		defer conn.Close(ctx)
 		if _, err := conn.Exec(ctx, "DROP DATABASE "+quoted+" WITH (FORCE)"); err != nil {
-			t.Logf("drop database: %v", err)
+			t.Errorf("drop database: %v", err)
 		}
 	})
 
