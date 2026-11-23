@@ -102,3 +102,69 @@ Preflight rulings (Codex conflict scan of the plan against the spec, PF1 to PF8)
 ### CP1 gate
 
 Gate: passed at commit 63addda on a clean tree. `make test` (with -race): all 7 packages ok. `make lint`: 0 issues. `make e2e` (with -race): ok, stack torn down, no containers left.
+
+## CP2: delivery engine, rate limiting, retries, metrics, engine e2e (Tasks 15 to 22)
+
+Same roles, limits and per-task loop as CP1. Before Task 16, Codex ran a second preflight conflict scan of the CP2 plan against the spec (PF9 to PF16 below).
+
+### Task table
+
+| Task | Subject | Commits | Review r0 | Fix rounds |
+|---|---|---|---|---|
+| 15 | Provider HTTP client and response classification | 17b56b5 | PASS, APPROVED | 0 |
+| 16 | Redis GCRA rate limiter with bounded wait | 76278a4, cb3b2de | spec FAIL, 1 important | 1 (cb3b2de), remainder routed to Task 19 |
+| 17 | Retry policy (backoff, jitter, 429 handling) | e66110a | PASS, APPROVED | 0 |
+| 18 | Queue operations: claim, start, finish, release, reap, depth | c0ed571 | PASS, 2 minor | 0 |
+| 19 | Worker engine, reaper loop, shutdown, worker config | 7245875, 0edeb8d, 8805747 | 2 important | 1 (8805747), plus controller fix 0edeb8d |
+| 20 | Configurable mock provider | bf2d021, f62ea0e | spec FAIL, 4 important | 1 (f62ea0e) |
+| 21 | Prometheus metrics, worker and mock provider in compose | 2616ba3, 8969ba8 | spec FAIL, 1 important | 1 (8969ba8, by ruling) |
+| 22 | Engine e2e suite and claim index plan check (R8) | ee55fed, 3ac38ea | spec FAIL, 2 important | 1 (3ac38ea) |
+
+### Review findings that changed code
+
+- Task 16: max wait was not enforced across retries and Redis calls, now the budget is checked before every script call and overdue grants are rejected (cb3b2de). The rest (go-redis ignores context deadlines on socket I/O unless `ContextTimeoutEnabled` is set) was routed to Task 19, where the worker builds its Redis client.
+- Task 19: the default idle backoff was never applied, so an idle worker polled every 200ms, now it grows to 1s (8805747).
+- Task 19: `StartAttempt` ran on the drain context, so new attempts could begin after shutdown started, now no new attempt starts once shutdown begins (8805747).
+- Task 20: the mock accepted trailing JSON, a missing `content` field and NaN or Inf rates, now all are rejected (f62ea0e).
+- Task 20: a scripted 1xx status produced a final 200 (Go writes 200 after a 1xx), now statuses are limited to 200..599 (f62ea0e).
+- Task 22: the priority scenario inferred priority from arrival order while several senders ran in parallel, now it runs with one sender per channel (3ac38ea).
+- Task 22: the R8 check did not multiply filtered rows by `Actual Loops`, so a repeated scan could pass the 500 row budget, now the whole per-loop sum is multiplied and unexecuted nodes add nothing (3ac38ea).
+
+### Controller rulings
+
+- Task 16: route the remaining max wait point to Task 19. The limiter receives an injected client and cannot set its options; the knob lives where the client is built.
+- Task 19: an implementer reported two "pre-existing intermittent" ratelimit failures. The controller traced them to test isolation (a 1h key leaked across `-count` runs) and timing, and fixed the tests (0edeb8d) instead of accepting the label.
+- Task 19: a Claim context cancelled at shutdown can leave committed rows in `processing` until the lease expires; the reaper recovers them (PF13). Accepted as designed, documented for the README.
+- Task 20: 1xx statuses removed from the mock protocol (PF15 amendment) instead of emulating them.
+- Task 21: the review asked for 27 zero `queue_depth` series when the first query fails. Overruled: zeros during a startup database outage read as an empty queue and hide the outage. The series is absent until the first successful refresh (an `absent()` alert can catch it), then all 27 combinations are emitted. The controller added the missing test (8969ba8) and wrote the PF14 amendment.
+- Task 21: the implementer changed `TestRateLimiterWaitBoundedThenRelease` outside the brief, calling it flaky. It passed 10 of 10 in isolation on the previous commit, but the stated cause (a cancel landing inside a Claim call, the PF13 path) is real under load and the change is test only, so it was accepted.
+- Task 21: the Codex re-review hung (no CPU for over 1.5 hours) and was killed, not retried. The fix range was a single test written by the controller, so the controller re-reviewed it. The review script now has a 15 minute timeout.
+
+Preflight rulings (PF9 to PF16):
+
+- PF9: worker config lives in `internal/config` with defaults and fail fast parsing that names the variable and never echoes URL values. `max_attempts` stays the column default 8 in CP2.
+- PF10: `Acquire` blocks until admission with one overall max wait; the worker sends only after it returns nil.
+- PF11: the retry policy takes the provider result, post increment attempts, row max and an injected clock.
+- PF12: the queue contract is frozen before Task 18; ownership loss is `store.ErrLeaseLost` and means do not send, write nothing.
+- PF13: Task 19 owns the reaper and the shutdown order (cancel claims, drain started sends, release unstarted rows on a non cancelled context).
+- PF14: observation is injectable with no-op defaults; Prometheus registries are process local; queue depth is collected by the API only with a 5s cache.
+- PF15: the mock protocol is frozen before Task 20; e2e resets mock state per scenario; priority is checked with one sender per channel or by claim order.
+- PF16: the claim index check uses `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` of the real claim probe on an analyzed, mostly future backlog, in `tests/integration`.
+
+### Deferred minor findings
+
+- Task 16: the max wait test ceiling (500ms) is loose and covers only immediate rejection.
+- Task 16: the Redis down test prints go-redis dial noise; a closed client variant would be quiet.
+- Task 18: the claim order test has no identical `next_attempt_at` tie-breaker case.
+- Task 18: the `StartAttempt` test does not assert lease renewal of `locked_until`.
+
+### Environment notes
+
+- Docker Desktop failed to start with "removing stale socket ... userAnalyticsOtlpHttp.sock". The file is an AF_UNIX reparse point that `del`, `fsutil` and `Remove-Item` cannot remove. Fix: quit Docker, `wsl --shutdown`, rename `%LOCALAPPDATA%\Docker\run`, start Docker. Needed twice in CP2.
+- The Docker engine hung during Task 22 (`docker info` blocked for minutes, testcontainers got 500). A forced restart with the same steps fixed it.
+- `core.autocrlf=true` turned Go files into CRLF after stash or checkout and gofmt flagged them; `.gitattributes` now pins LF (0edeb8d).
+- The engine e2e phase takes about 4.5 to 5 minutes, mostly retry waits and worker stop and start in two scenarios.
+
+### CP2 gate
+
+Gate: passed at commit 3ac38ea on a clean tree. `make test` (with -race): all 12 packages ok. `make lint`: 0 issues. `make e2e`: API phase ok (4s), engine phase ok (257s), stack torn down, no containers left.
