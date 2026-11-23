@@ -77,6 +77,7 @@ func (s *server) createNotification(w http.ResponseWriter, r *http.Request) {
 	case res.Replayed:
 		writeJSON(w, http.StatusOK, toDTO(res.Notification))
 	default:
+		s.Metrics.Created(nn.Channel, nn.Priority)
 		writeJSON(w, http.StatusCreated, toDTO(res.Notification))
 	}
 }

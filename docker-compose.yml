@@ -58,5 +58,48 @@ services:
       timeout: 3s
       retries: 20
 
+  mock-provider:
+    <<: *app
+    command: ["mockprovider"]
+    environment:
+      MOCK_ADDR: ":9090"
+    ports:
+      - "127.0.0.1:9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/_control/config"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    <<: *app
+    command: ["worker"]
+    environment:
+      <<: *app-env
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      PROVIDER_URL: ${PROVIDER_URL:-http://mock-provider:9090/}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      WORKER_HTTP_ADDR: ":8081"
+      WORKER_CONCURRENCY_PER_CHANNEL: ${WORKER_CONCURRENCY_PER_CHANNEL:-10}
+      CLAIM_BATCH: ${CLAIM_BATCH:-20}
+      RATELIMIT_MAX_WAIT: ${RATELIMIT_MAX_WAIT:-10s}
+      RETRY_BASE_DELAY: ${RETRY_BASE_DELAY:-2s}
+      RETRY_MAX_DELAY: ${RETRY_MAX_DELAY:-10m}
+      MAX_DELIVERY_AGE: ${MAX_DELIVERY_AGE:-24h}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-15s}
+      REAPER_INTERVAL: ${REAPER_INTERVAL:-5s}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      mock-provider:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
 volumes:
   pgdata:

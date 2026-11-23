@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/tarikdeveci/insider-notification-system/internal/api"
@@ -59,11 +60,17 @@ func run() int {
 		}
 	}()
 
+	st := store.New(pool)
+	reg := prometheus.NewRegistry()
+	metrics := observability.NewAPIMetrics(reg)
+	observability.RegisterQueueDepth(reg, st, log)
+
 	handler := api.NewServer(api.Deps{
-		Store:  store.New(pool),
-		DB:     pool,
-		Redis:  api.RedisPinger{Client: rdb},
-		Logger: log,
+		Store:   st,
+		DB:      pool,
+		Redis:   api.RedisPinger{Client: rdb},
+		Logger:  log,
+		Metrics: metrics,
 	})
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

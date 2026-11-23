@@ -56,6 +56,10 @@ func (s *server) createBatch(w http.ResponseWriter, r *http.Request) {
 		code := http.StatusCreated
 		if res.Replayed {
 			code = http.StatusOK
+		} else {
+			for _, it := range items {
+				s.Metrics.Created(it.Channel, it.Priority)
+			}
 		}
 		writeJSON(w, code, batchCreatedResponse{BatchID: res.BatchID, NotificationIDs: res.IDs})
 	}

@@ -324,13 +324,17 @@ func TestRateLimiterWaitBoundedThenRelease(t *testing.T) {
 	rdb := testRedis(t)
 	// One permit per hour: the first row is admitted, the second can never be within 150ms.
 	real := ratelimit.New(rdb, ratelimit.WithInterval(time.Hour), ratelimit.WithMaxWait(150*time.Millisecond))
-	// Signal the third Acquire: the second row was released once and is waiting again,
-	// so the cancel below cannot land inside a Claim call.
+	// The third Acquire parks until the run context is cancelled. A wait-exceeded
+	// answer returns almost at once, so without parking the loop keeps cycling and
+	// the cancel can land inside a Claim call whose committed row is then only
+	// recoverable by the reaper. Parked, the row is held and shutdown releases it.
 	var calls atomic.Int32
 	thirdAcquire := make(chan struct{})
 	lim := funcLimiter(func(ctx context.Context, ch string) (time.Duration, error) {
 		if calls.Add(1) == 3 {
 			close(thirdAcquire)
+			<-ctx.Done()
+			return 0, ctx.Err()
 		}
 		return real.Acquire(ctx, ch)
 	})

@@ -9,6 +9,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/tarikdeveci/insider-notification-system/internal/observability"
 	"github.com/tarikdeveci/insider-notification-system/internal/store"
 )
 
@@ -29,6 +30,8 @@ type Deps struct {
 	DB     Pinger
 	Redis  Pinger
 	Logger *slog.Logger
+	// Metrics is optional; nil disables instrumentation and makes /metrics a 404.
+	Metrics *observability.APIMetrics
 }
 
 type route struct {
@@ -42,6 +45,7 @@ func (s *server) routes() []route {
 	return []route{
 		{"GET /healthz", s.healthz},
 		{"GET /readyz", s.readyz},
+		{"GET /metrics", s.metrics},
 		{"POST /v1/notifications", s.createNotification},
 		{"GET /v1/notifications/{id}", s.getNotification},
 		{"GET /v1/notifications", s.listNotifications},
@@ -68,13 +72,17 @@ func NewServer(d Deps) http.Handler {
 	for _, rt := range s.routes() {
 		mux.HandleFunc(rt.pattern, rt.handler)
 	}
-	return wrap(d.Logger, problemMux{mux})
+	return wrapWith(d.Logger, d.Metrics, problemMux{mux})
 }
 
 // wrap applies the middleware chain. Recover sits inside AccessLog so a
 // recovered panic still produces exactly one access record, with status 500.
-func wrap(log *slog.Logger, h http.Handler) http.Handler {
-	return RequestID(AccessLog(log)(Recover(log)(h)))
+func wrap(log *slog.Logger, h http.Handler) http.Handler { return wrapWith(log, nil, h) }
+
+// wrapWith is wrap plus request metrics, which sit between AccessLog and
+// Recover so a recovered panic is still counted, with status 500.
+func wrapWith(log *slog.Logger, m *observability.APIMetrics, h http.Handler) http.Handler {
+	return RequestID(AccessLog(log)(Instrument(m)(Recover(log)(h))))
 }
 
 // problemMux renders the mux's own 404 and 405 answers as problem+json,
@@ -116,6 +124,14 @@ func (p *probeWriter) WriteHeader(code int) {
 	if p.status == 0 {
 		p.status = code
 	}
+}
+
+func (s *server) metrics(w http.ResponseWriter, r *http.Request) {
+	if s.Metrics == nil {
+		writeProblem(w, r, http.StatusNotFound, "metrics are not enabled", nil)
+		return
+	}
+	s.Metrics.Handler().ServeHTTP(w, r)
 }
 
 func (s *server) healthz(w http.ResponseWriter, r *http.Request) {

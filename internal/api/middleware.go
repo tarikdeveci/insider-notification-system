@@ -71,3 +71,35 @@ func AccessLog(log *slog.Logger) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// Instrument records request count and latency labelled with the mux pattern
+// that served the request ("unmatched" for 404 and 405), never the raw path.
+// It must receive the same *http.Request the mux serves, because the mux sets
+// r.Pattern on it; nothing between Instrument and the mux may copy the request.
+func Instrument(m *observability.APIMetrics) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if m == nil {
+			return next
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			next.ServeHTTP(rec, r)
+			route := r.Pattern
+			if route == "" {
+				route = "unmatched"
+			}
+			m.ObserveHTTP(metricMethod(r.Method), route, rec.status, time.Since(start))
+		})
+	}
+}
+
+// metricMethod bounds the method label: clients can send arbitrary tokens.
+func metricMethod(m string) string {
+	switch m {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodHead, http.MethodOptions:
+		return m
+	}
+	return "OTHER"
+}

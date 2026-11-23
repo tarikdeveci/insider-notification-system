@@ -35,6 +35,21 @@ paths:
                   status:
                     type: string
                     enum: [ok]
+  /metrics:
+    get:
+      tags: [health]
+      operationId: getMetrics
+      summary: Prometheus metrics (text exposition format)
+      responses:
+        "200":
+          description: Current metrics of this process.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            text/plain:
+              schema:
+                type: string
   /readyz:
     get:
       tags: [health]

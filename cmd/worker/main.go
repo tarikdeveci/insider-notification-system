@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/tarikdeveci/insider-notification-system/internal/config"
@@ -66,7 +67,9 @@ func run() int {
 	}()
 
 	// The client error never contains the URL (it carries the webhook id).
-	prov, err := provider.NewClient(cfg.ProviderURL, provider.WithLogger(log))
+	reg := prometheus.NewRegistry()
+	metrics := observability.NewWorkerMetrics(reg)
+	prov, err := provider.NewClient(cfg.ProviderURL, provider.WithLogger(log), provider.WithUnparsedCounter(metrics.UnparsedBody()))
 	if err != nil {
 		log.Error("invalid PROVIDER_URL: " + err.Error())
 		return 1
@@ -81,11 +84,11 @@ func run() int {
 		ReaperInterval:  cfg.ReaperInterval,
 		MaxDeliveryAge:  cfg.MaxDeliveryAge,
 		Policy:          worker.Policy{Base: cfg.RetryBaseDelay, Cap: cfg.RetryMaxDelay, MaxAge: cfg.MaxDeliveryAge},
-	}, worker.WithLogger(log))
+	}, worker.WithLogger(log), worker.WithObserver(metrics))
 
 	srv := &http.Server{
 		Addr:              cfg.WorkerHTTPAddr,
-		Handler:           healthMux(pool.Ping, func(ctx context.Context) error { return rdb.Ping(ctx).Err() }),
+		Handler:           healthMux(pool.Ping, func(ctx context.Context) error { return rdb.Ping(ctx).Err() }, metrics.Handler()),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -128,9 +131,10 @@ func run() int {
 	return code
 }
 
-// healthMux serves /healthz (always 200) and /readyz (200 when both pings pass, else 503 problem JSON).
-func healthMux(pingPG, pingRedis func(context.Context) error) http.Handler {
+// healthMux serves /metrics, /healthz (always 200) and /readyz (200 when both pings pass, else 503 problem JSON).
+func healthMux(pingPG, pingRedis func(context.Context) error, metrics http.Handler) http.Handler {
 	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", metrics)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
