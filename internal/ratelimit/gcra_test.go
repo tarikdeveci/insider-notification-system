@@ -167,7 +167,9 @@ func TestWaitBoundedByMaxWait(t *testing.T) {
 	rdb := newClient(t)
 	l := ratelimit.New(rdb, ratelimit.WithInterval(time.Second), ratelimit.WithMaxWait(25*time.Millisecond))
 	ctx := context.Background()
-	if _, err := l.Acquire(ctx, "bounded"); err != nil {
+	// The first permit uses a generous budget so a cold connection cannot trip the 25ms bound.
+	warm := ratelimit.New(rdb, ratelimit.WithInterval(time.Second))
+	if _, err := warm.Acquire(ctx, "bounded"); err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
 	start := time.Now()
@@ -227,5 +229,27 @@ func TestRedisDownFailsClosed(t *testing.T) {
 	}
 	if called {
 		t.Fatal("grant hook fired without a permit")
+	}
+}
+
+func TestOversleepingSleeperCannotGrantPastMaxWait(t *testing.T) {
+	rdb := newClient(t)
+	grants := 0
+	oversleep := func(ctx context.Context, d time.Duration) error {
+		time.Sleep(150 * time.Millisecond) // wakes far after the 40ms budget
+		return nil
+	}
+	l := ratelimit.New(rdb, ratelimit.WithMaxWait(40*time.Millisecond), ratelimit.WithSleep(oversleep),
+		ratelimit.WithGrantHook(func(string, time.Time) { grants++ }))
+	if _, err := l.Acquire(context.Background(), "oversleep"); err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	// The slot of the first permit is still within its 10ms interval, so this is denied, sleeps long, then must not grant.
+	_, err := l.Acquire(context.Background(), "oversleep")
+	if !errors.Is(err, ratelimit.ErrWaitExceeded) {
+		t.Fatalf("err = %v, want ErrWaitExceeded", err)
+	}
+	if grants != 1 {
+		t.Fatalf("grants = %d, want 1 (overdue permit must not be reported)", grants)
 	}
 }

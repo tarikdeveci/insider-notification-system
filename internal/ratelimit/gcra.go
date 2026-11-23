@@ -90,22 +90,35 @@ func (l *Limiter) Acquire(ctx context.Context, channel string) (time.Duration, e
 	start := l.clock()
 	ttl := (l.interval + ttlMargin).Milliseconds()
 	for {
-		res, err := gcraScript.Run(ctx, l.rdb, []string{keyPrefix + channel},
+		remaining := l.maxWait - l.clock().Sub(start)
+		if remaining <= 0 {
+			return l.clock().Sub(start), ErrWaitExceeded
+		}
+		callCtx, cancel := context.WithTimeout(ctx, remaining)
+		res, err := gcraScript.Run(callCtx, l.rdb, []string{keyPrefix + channel},
 			l.interval.Microseconds(), ttl).Int64Slice()
+		cancel()
 		if err != nil {
+			if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+				return l.clock().Sub(start), ErrWaitExceeded
+			}
 			return l.clock().Sub(start), fmt.Errorf("ratelimit: acquire %s: %w", channel, err)
 		}
 		if len(res) != 2 {
 			return l.clock().Sub(start), fmt.Errorf("ratelimit: acquire %s: unexpected script reply %v", channel, res)
 		}
+		waited := l.clock().Sub(start)
 		if res[0] == 1 {
+			if waited > l.maxWait {
+				// Overdue grant: the Redis slot is consumed but the caller must not send (fail closed).
+				return waited, ErrWaitExceeded
+			}
 			if l.hook != nil {
 				l.hook(channel, time.UnixMicro(res[1]))
 			}
-			return l.clock().Sub(start), nil
+			return waited, nil
 		}
 		retry := time.Duration(res[1]) * time.Microsecond
-		waited := l.clock().Sub(start)
 		if waited+retry > l.maxWait {
 			return waited, ErrWaitExceeded
 		}
