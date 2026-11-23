@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/tarikdeveci/insider-notification-system/internal/domain"
 	"github.com/tarikdeveci/insider-notification-system/internal/store"
@@ -108,5 +109,103 @@ func TestCreateConcurrentSameKey(t *testing.T) {
 	}
 	if rows != 1 {
 		t.Fatalf("rows = %d", rows)
+	}
+}
+
+func TestScheduledSetsNextAttemptAt(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	at := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Microsecond)
+	same := func(name string, got, want time.Time) {
+		t.Helper()
+		if !got.Truncate(time.Microsecond).Equal(want) {
+			t.Fatalf("%s: got %v want %v", name, got, want)
+		}
+	}
+
+	t.Run("single", func(t *testing.T) {
+		nn := sample(domain.ChannelSMS, "later")
+		nn.ScheduledAt = &at
+		res, err := s.CreateNotification(ctx, store.CreateParams{New: nn, CorrelationID: "c"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := res.Notification
+		if n.ScheduledAt == nil {
+			t.Fatal("scheduled_at not returned")
+		}
+		same("scheduled_at", *n.ScheduledAt, at)
+		same("next_attempt_at", n.NextAttemptAt, at)
+		got, err := s.GetNotification(ctx, n.ID)
+		if err != nil || got.ScheduledAt == nil {
+			t.Fatalf("get: %v %+v", err, got)
+		}
+		same("get scheduled_at", *got.ScheduledAt, at)
+
+		plain := mustCreate(t, s, domain.ChannelSMS, "now")
+		if plain.ScheduledAt != nil || time.Since(plain.NextAttemptAt) > time.Minute || plain.NextAttemptAt.After(time.Now().Add(time.Minute)) {
+			t.Fatalf("unscheduled row: %+v", plain)
+		}
+	})
+
+	t.Run("batch", func(t *testing.T) {
+		items := batchItems(3)
+		items[1].ScheduledAt = &at
+		res, err := s.CreateBatch(ctx, store.CreateBatchParams{Items: items, CorrelationID: "c"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, id := range res.IDs {
+			var sched *time.Time
+			var next time.Time
+			if err := pool.QueryRow(ctx, `SELECT scheduled_at, next_attempt_at FROM notifications WHERE id = $1::uuid`, id).Scan(&sched, &next); err != nil {
+				t.Fatal(err)
+			}
+			if i == 1 {
+				if sched == nil {
+					t.Fatal("item 1 lost scheduled_at")
+				}
+				same("batch scheduled_at", *sched, at)
+				same("batch next_attempt_at", next, at)
+				continue
+			}
+			if sched != nil || next.After(time.Now().Add(time.Minute)) || time.Since(next) > time.Minute {
+				t.Fatalf("item %d: scheduled %v next %v", i, sched, next)
+			}
+		}
+	})
+}
+
+func TestResolveReplay(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	if _, err := s.ResolveReplay(ctx, "nokey", "h"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing key: %v", err)
+	}
+	first, err := s.CreateNotification(ctx, store.CreateParams{New: sample(domain.ChannelSMS, "x"), IdempotencyKey: "k", RequestHash: "h1", CorrelationID: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ResolveReplay(ctx, "k", "h1")
+	if err != nil || !got.Replayed || got.Notification.ID != first.Notification.ID {
+		t.Fatalf("resolve: %v %+v", err, got)
+	}
+	if _, err := s.ResolveReplay(ctx, "k", "other"); !errors.Is(err, store.ErrIdempotencyConflict) {
+		t.Fatalf("hash mismatch: %v", err)
+	}
+
+	if _, err := s.ResolveBatchReplay(ctx, "nobk", "h"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing batch key: %v", err)
+	}
+	b, err := s.CreateBatch(ctx, store.CreateBatchParams{Items: batchItems(2), IdempotencyKey: "bk", RequestHash: "bh", CorrelationID: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	br, err := s.ResolveBatchReplay(ctx, "bk", "bh")
+	if err != nil || !br.Replayed || br.BatchID != b.BatchID || len(br.IDs) != 2 {
+		t.Fatalf("resolve batch: %v %+v", err, br)
+	}
+	if _, err := s.ResolveBatchReplay(ctx, "bk", "other"); !errors.Is(err, store.ErrIdempotencyConflict) {
+		t.Fatalf("batch hash mismatch: %v", err)
 	}
 }

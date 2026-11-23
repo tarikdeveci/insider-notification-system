@@ -14,6 +14,7 @@ type Notification struct {
 	Attempts          int
 	MaxAttempts       int
 	NextAttemptAt     time.Time
+	ScheduledAt       *time.Time
 	ProviderMessageID *string
 	LastError         *string
 	CorrelationID     string

@@ -120,6 +120,9 @@ func TestCreateGetListCancel(t *testing.T) {
 	if code != 201 || n["status"] != "pending" {
 		t.Fatalf("create: %d %v", code, n)
 	}
+	if v, ok := n["scheduled_at"]; !ok || v != nil {
+		t.Fatalf("unscheduled notification must show scheduled_at null: %v", n)
+	}
 	id := n["id"].(string)
 	if code, _, got := call(t, "GET", "/v1/notifications/"+id, "", nil); code != 200 || got["id"] != id {
 		t.Fatalf("get: %d %v", code, got)

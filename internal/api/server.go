@@ -32,6 +32,8 @@ type Deps struct {
 	Logger *slog.Logger
 	// Metrics is optional; nil disables instrumentation and makes /metrics a 404.
 	Metrics *observability.APIMetrics
+	// Now is the clock used for schedule checks; nil means time.Now.
+	Now func() time.Time
 }
 
 type route struct {
@@ -40,6 +42,13 @@ type route struct {
 }
 
 type server struct{ Deps }
+
+func (s *server) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
 
 func (s *server) routes() []route {
 	return []route{

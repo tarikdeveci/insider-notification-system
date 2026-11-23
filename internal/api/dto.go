@@ -20,6 +20,7 @@ type notificationDTO struct {
 	Attempts          int        `json:"attempts"`
 	MaxAttempts       int        `json:"max_attempts"`
 	NextAttemptAt     time.Time  `json:"next_attempt_at"`
+	ScheduledAt       *time.Time `json:"scheduled_at"`
 	ProviderMessageID *string    `json:"provider_message_id"`
 	LastError         *string    `json:"last_error"`
 	CorrelationID     string     `json:"correlation_id"`
@@ -55,6 +56,7 @@ func toDTO(n domain.Notification) notificationDTO {
 		Attempts:          n.Attempts,
 		MaxAttempts:       n.MaxAttempts,
 		NextAttemptAt:     n.NextAttemptAt,
+		ScheduledAt:       n.ScheduledAt,
 		ProviderMessageID: n.ProviderMessageID,
 		LastError:         n.LastError,
 		CorrelationID:     n.CorrelationID,

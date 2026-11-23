@@ -3,6 +3,7 @@ package domain_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tarikdeveci/insider-notification-system/internal/domain"
 )
@@ -119,5 +120,87 @@ func TestIsUUID(t *testing.T) {
 		if domain.IsUUID(s) {
 			t.Errorf("%q must be rejected", s)
 		}
+	}
+}
+
+func ptr(s string) *string { return &s }
+
+func TestScheduledAtMustBeFutureAndWithin30Days(t *testing.T) {
+	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) *time.Time { v := now.Add(d); return &v }
+	tests := []struct {
+		name   string
+		at     *time.Time
+		wantOK bool
+	}{
+		{"unset", nil, true},
+		{"past", at(-time.Second), false},
+		{"now", at(0), false},
+		{"one second ahead", at(time.Second), true},
+		{"exactly 30 days", at(30 * 24 * time.Hour), true},
+		{"30 days plus one second", at(30*24*time.Hour + time.Second), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := domain.CheckSchedule(tc.at, now)
+			if tc.wantOK != (len(errs) == 0) {
+				t.Fatalf("errs = %+v", errs)
+			}
+			for _, e := range errs {
+				if e.Field != "scheduled_at" {
+					t.Errorf("field = %q", e.Field)
+				}
+			}
+		})
+	}
+
+	t.Run("bad format is a validation error", func(t *testing.T) {
+		for _, v := range []string{"tomorrow", "2026-11-23", "2026-11-23 12:00:00", ""} {
+			_, errs := domain.CreateRequest{Recipient: "tok", Channel: "push", Content: "x", ScheduledAt: ptr(v)}.Validate()
+			if len(errs) != 1 || errs[0].Field != "scheduled_at" {
+				t.Errorf("%q: errs = %+v", v, errs)
+			}
+		}
+	})
+	t.Run("offset is normalized to UTC", func(t *testing.T) {
+		nn, errs := domain.CreateRequest{Recipient: "tok", Channel: "push", Content: "x", ScheduledAt: ptr("2026-12-01T15:00:00+03:00")}.Validate()
+		if len(errs) != 0 || nn.ScheduledAt == nil {
+			t.Fatalf("errs = %+v", errs)
+		}
+		if want := time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC); !nn.ScheduledAt.Equal(want) || nn.ScheduledAt.Location() != time.UTC {
+			t.Fatalf("got %v", nn.ScheduledAt)
+		}
+	})
+	t.Run("batch index", func(t *testing.T) {
+		_, errs := domain.ValidateBatch(domain.BatchRequest{Notifications: []domain.CreateRequest{
+			{Recipient: "tok", Channel: "push", Content: "x"},
+			{Recipient: "tok", Channel: "push", Content: "x", ScheduledAt: ptr("nope")},
+		}})
+		if len(errs) != 1 || errs[0].Index == nil || *errs[0].Index != 1 || errs[0].Field != "scheduled_at" {
+			t.Fatalf("errs = %+v", errs)
+		}
+	})
+}
+
+func TestHashScheduledAtBackwardCompatible(t *testing.T) {
+	// Pinned from the implementation before scheduled_at existed (PF17).
+	const pinned = "c413775bd6212ec1edcad315bca953e9c5e7ae8c2b3c3b50af23bd3ce76a0f8f"
+	n, errs := domain.CreateRequest{Recipient: "+905551234567", Channel: "sms", Content: "hello", Priority: "high"}.Validate()
+	if len(errs) != 0 || n.Hash() != pinned {
+		t.Fatalf("hash without scheduled_at changed: %s (%v)", n.Hash(), errs)
+	}
+	base := domain.CreateRequest{Recipient: "+905551234567", Channel: "sms", Content: "hello", Priority: "high"}
+	a, b, c := base, base, base
+	a.ScheduledAt = ptr("2026-12-01T12:00:00Z")
+	b.ScheduledAt = ptr("2026-12-01T15:00:00+03:00")
+	c.ScheduledAt = ptr("2026-12-01T12:00:01Z")
+	na, _ := a.Validate()
+	nb, _ := b.Validate()
+	nc, _ := c.Validate()
+	if na.Hash() != nb.Hash() {
+		t.Error("same instant with different offsets must hash the same")
+	}
+	if na.Hash() == n.Hash() || na.Hash() == nc.Hash() {
+		t.Error("scheduled_at must change the hash")
 	}
 }

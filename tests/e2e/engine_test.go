@@ -10,6 +10,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"sort"
@@ -288,6 +289,36 @@ func Test429DoesNotConsumeAttempts(t *testing.T) {
 	n := waitStatus(t, createNotif(t, "email", to), defaultDeadline, "sent")
 	if n.Attempts != 1 || len(n.Delivery) != 3 {
 		t.Fatalf("got %+v", n)
+	}
+}
+
+func TestScheduledSendWaits(t *testing.T) {
+	needEnginePhase(t)
+	mockReset(t)
+	to := smsRecipient()
+	at := time.Now().Add(6 * time.Second).UTC().Truncate(time.Millisecond)
+	body := fmt.Sprintf(`{"recipient":%q,"channel":"sms","content":"scheduled e2e","scheduled_at":%q}`, to, at.Format(time.RFC3339Nano))
+	code, _, created := call(t, "POST", "/v1/notifications", body, nil)
+	if code != 201 {
+		t.Fatalf("create: %d %v", code, created)
+	}
+	got, err := time.Parse(time.RFC3339Nano, fmt.Sprint(created["scheduled_at"]))
+	if err != nil || !got.Equal(at) {
+		t.Fatalf("scheduled_at = %v, want %v (err %v)", created["scheduled_at"], at, err)
+	}
+	id := created["id"].(string)
+
+	time.Sleep(3 * time.Second)
+	if n := getNotif(t, id); n.Status != "pending" || n.Attempts != 0 {
+		t.Fatalf("before its time: %+v", n)
+	}
+	if arrs, _ := mockArrivals(t, "?to="+url.QueryEscape(to)); len(arrs) != 0 {
+		t.Fatalf("provider received it before scheduled_at: %+v", arrs)
+	}
+	waitStatus(t, id, 20*time.Second, "sent")
+	arrs, _ := mockArrivals(t, "?to="+url.QueryEscape(to))
+	if len(arrs) != 1 || arrs[0].Key != id {
+		t.Fatalf("arrivals: %+v", arrs)
 	}
 }
 

@@ -41,10 +41,24 @@ func (s *server) createBatch(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusUnprocessableEntity, "validation failed", errs)
 		return
 	}
+	hash := domain.BatchHash(items)
+	var serrs []domain.FieldError
+	now := s.now()
+	for i, it := range items {
+		for _, fe := range domain.CheckSchedule(it.ScheduledAt, now) {
+			idx := i
+			fe.Index = &idx
+			serrs = append(serrs, fe)
+		}
+	}
+	if len(serrs) > 0 {
+		s.batchScheduleRejected(w, r, key, hash, serrs)
+		return
+	}
 	res, err := s.Store.CreateBatch(r.Context(), store.CreateBatchParams{
 		Items:          items,
 		IdempotencyKey: key,
-		RequestHash:    domain.BatchHash(items),
+		RequestHash:    hash,
 		CorrelationID:  observability.CorrelationID(r.Context()),
 	})
 	switch {
@@ -62,6 +76,26 @@ func (s *server) createBatch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		writeJSON(w, code, batchCreatedResponse{BatchID: res.BatchID, NotificationIDs: res.IDs})
+	}
+}
+
+// batchScheduleRejected is scheduleRejected for batches: a stored batch under
+// the same key is replayed or conflicts before the schedule errors are shown.
+func (s *server) batchScheduleRejected(w http.ResponseWriter, r *http.Request, key, hash string, errs []domain.FieldError) {
+	if key == "" {
+		writeProblem(w, r, http.StatusUnprocessableEntity, "validation failed", errs)
+		return
+	}
+	res, err := s.Store.ResolveBatchReplay(r.Context(), key, hash)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, batchCreatedResponse{BatchID: res.BatchID, NotificationIDs: res.IDs})
+	case errors.Is(err, store.ErrIdempotencyConflict):
+		writeProblem(w, r, http.StatusConflict, "Idempotency-Key was already used with a different request", nil)
+	case errors.Is(err, store.ErrNotFound):
+		writeProblem(w, r, http.StatusUnprocessableEntity, "validation failed", errs)
+	default:
+		internalError(w, r, s.Logger, err)
 	}
 }
 

@@ -63,6 +63,10 @@ func (s *server) createNotification(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusUnprocessableEntity, "validation failed", errs)
 		return
 	}
+	if serrs := domain.CheckSchedule(nn.ScheduledAt, s.now()); len(serrs) > 0 {
+		s.scheduleRejected(w, r, key, nn.Hash(), serrs)
+		return
+	}
 	res, err := s.Store.CreateNotification(r.Context(), store.CreateParams{
 		New:            nn,
 		IdempotencyKey: key,
@@ -79,6 +83,27 @@ func (s *server) createNotification(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.Metrics.Created(nn.Channel, nn.Priority)
 		writeJSON(w, http.StatusCreated, toDTO(res.Notification))
+	}
+}
+
+// scheduleRejected answers a create whose schedule is out of range. The time
+// check applies to new inserts only (spec section 9), so with an
+// Idempotency-Key a stored request is replayed (200) or conflicts (409) first.
+func (s *server) scheduleRejected(w http.ResponseWriter, r *http.Request, key, hash string, errs []domain.FieldError) {
+	if key == "" {
+		writeProblem(w, r, http.StatusUnprocessableEntity, "validation failed", errs)
+		return
+	}
+	res, err := s.Store.ResolveReplay(r.Context(), key, hash)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, toDTO(res.Notification))
+	case errors.Is(err, store.ErrIdempotencyConflict):
+		writeProblem(w, r, http.StatusConflict, "Idempotency-Key was already used with a different request", nil)
+	case errors.Is(err, store.ErrNotFound):
+		writeProblem(w, r, http.StatusUnprocessableEntity, "validation failed", errs)
+	default:
+		internalError(w, r, s.Logger, err)
 	}
 }
 

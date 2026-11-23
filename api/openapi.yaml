@@ -90,7 +90,10 @@ paths:
         with the original notification, and the same key with a different payload
         answers 409. Error causes: 400 malformed or non-object JSON, unknown
         field, trailing data or a bad Idempotency-Key; 413 body over 64 KiB; 422
-        validation failed (the errors array lists every invalid field).
+        validation failed (the errors array lists every invalid field, including a
+        malformed or out of range scheduled_at). A scheduled_at in the past or
+        more than 30 days ahead is rejected for a new notification, but a replay
+        with the same Idempotency-Key still answers 200 after the time has passed.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -200,6 +203,9 @@ paths:
         create: 201 first time, 200 replay (same ids in request order), 409 for
         a different payload. 400 is malformed JSON, unknown field, trailing data
         or a bad Idempotency-Key; 413 is a body over 8 MiB.
+        Items may carry scheduled_at (same rules as single create); each item is
+        checked and errors carry its index. As for single create, a replay with
+        the same key after a scheduled time has passed still answers 200.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -420,6 +426,16 @@ components:
             - $ref: "#/components/schemas/Priority"
           default: normal
           description: Omitting it is the same as normal.
+        scheduled_at:
+          type: string
+          format: date-time
+          description: |
+            Optional RFC 3339 timestamp (offsets allowed, stored as UTC). The
+            notification is not sent before this time. It must be strictly in
+            the future and at most 30 days ahead. That time check applies only
+            to new notifications: replaying a request with the same
+            Idempotency-Key after the time has passed still answers 200 with
+            the original (a changed body answers 409).
     Notification:
       type: object
       required:
@@ -433,6 +449,7 @@ components:
         - attempts
         - max_attempts
         - next_attempt_at
+        - scheduled_at
         - provider_message_id
         - last_error
         - correlation_id
@@ -464,6 +481,11 @@ components:
         next_attempt_at:
           type: string
           format: date-time
+        scheduled_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: The requested send time, null when the notification was not scheduled.
         provider_message_id:
           type: string
           nullable: true

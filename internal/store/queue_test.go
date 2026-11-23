@@ -597,3 +597,33 @@ func TestCancelVsClaimRace(t *testing.T) {
 		}
 	}
 }
+
+func TestMaxDeliveryAgeUsesScheduledAt(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	at := time.Now().Add(-10 * time.Minute)
+	nn := sample(domain.ChannelSMS, "sched")
+	nn.ScheduledAt = &at
+	res, err := s.CreateNotification(ctx, store.CreateParams{New: nn, CorrelationID: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := res.Notification.ID
+	rows, err := s.Claim(ctx, domain.ChannelSMS, 1, newToken(t, pool))
+	if err != nil || len(rows) != 1 || rows[0].ID != id {
+		t.Fatalf("claim: %v %+v", err, rows)
+	}
+	exec(t, pool, `UPDATE notifications SET created_at = now() - interval '5 hours' WHERE id = $1::uuid`, id)
+	expireLease(t, pool, id)
+
+	reaped, err := s.Reap(ctx, time.Hour)
+	if err != nil || len(reaped) != 1 {
+		t.Fatalf("reap: %v %+v", err, reaped)
+	}
+	if r := reaped[0]; r.Status != domain.StatusPending || r.Reason != "" {
+		t.Fatalf("scheduled row measured from created_at: %+v", r)
+	}
+	if st := state(t, pool, id); st.status != "pending" {
+		t.Fatalf("status %s", st.status)
+	}
+}

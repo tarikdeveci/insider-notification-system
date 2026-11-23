@@ -28,7 +28,7 @@ func New(pool *pgxpool.Pool) *Store {
 }
 
 // notificationCols is the standard select list read by scanNotification.
-const notificationCols = "id::text, batch_id::text, channel, recipient, content, priority, status, attempts, max_attempts, next_attempt_at, provider_message_id, last_error, correlation_id, created_at, updated_at, sent_at"
+const notificationCols = "id::text, batch_id::text, channel, recipient, content, priority, status, attempts, max_attempts, next_attempt_at, provider_message_id, last_error, correlation_id, created_at, updated_at, sent_at, scheduled_at"
 
 // scanNotification scans the notificationCols columns, then any extra
 // destinations, from a pgx.Row or the current pgx.Rows row.
@@ -43,7 +43,7 @@ func scanNotification(row pgx.Row, extra ...any) (domain.Notification, error) {
 	dest := []any{
 		&n.ID, &n.BatchID, &channel, &n.Recipient, &n.Content, &priority, &status,
 		&n.Attempts, &n.MaxAttempts, &n.NextAttemptAt, &n.ProviderMessageID, &n.LastError,
-		&n.CorrelationID, &n.CreatedAt, &n.UpdatedAt, &sentAt,
+		&n.CorrelationID, &n.CreatedAt, &n.UpdatedAt, &sentAt, &n.ScheduledAt,
 	}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return domain.Notification{}, err

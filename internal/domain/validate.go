@@ -7,12 +7,16 @@ import (
 	"net/mail"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
 
 // MaxBatchItems is the largest accepted batch.
 const MaxBatchItems = 1000
+
+// MaxScheduleAhead is how far in the future a notification may be scheduled.
+const MaxScheduleAhead = 30 * 24 * time.Hour
 
 var (
 	smsRecipient = regexp.MustCompile(`^\+[0-9]{8,15}$`)
@@ -32,6 +36,8 @@ type CreateRequest struct {
 	Channel   string `json:"channel"`
 	Content   string `json:"content"`
 	Priority  string `json:"priority"`
+	// ScheduledAt is an optional RFC 3339 timestamp; parsed in Validate.
+	ScheduledAt *string `json:"scheduled_at"`
 }
 
 // BatchRequest is the API payload for a batch.
@@ -45,6 +51,8 @@ type NewNotification struct {
 	Recipient string
 	Content   string
 	Priority  Priority
+	// ScheduledAt is the parsed schedule in UTC, nil when not scheduled.
+	ScheduledAt *time.Time
 }
 
 // Validate checks r and returns every problem found, not just the first.
@@ -99,10 +107,37 @@ func (r CreateRequest) Validate() (NewNotification, []FieldError) {
 		}
 	}
 
+	var scheduled *time.Time
+	if r.ScheduledAt != nil {
+		t, err := time.Parse(time.RFC3339, *r.ScheduledAt)
+		if err != nil {
+			add("scheduled_at", "must be an RFC 3339 timestamp like 2026-12-01T09:00:00Z")
+		} else {
+			t = t.UTC()
+			scheduled = &t
+		}
+	}
+
 	if len(errs) > 0 {
 		return NewNotification{}, errs
 	}
-	return NewNotification{Channel: ch, Recipient: r.Recipient, Content: r.Content, Priority: prio}, nil
+	return NewNotification{Channel: ch, Recipient: r.Recipient, Content: r.Content, Priority: prio, ScheduledAt: scheduled}, nil
+}
+
+// CheckSchedule is the time sensitive part of schedule validation: at must be
+// strictly after now and at most MaxScheduleAhead ahead. A nil at is valid.
+// It is applied only to new inserts, never to idempotent replays.
+func CheckSchedule(at *time.Time, now time.Time) []FieldError {
+	if at == nil {
+		return nil
+	}
+	if !at.After(now) {
+		return []FieldError{{Field: "scheduled_at", Message: "must be in the future"}}
+	}
+	if at.After(now.Add(MaxScheduleAhead)) {
+		return []FieldError{{Field: "scheduled_at", Message: "must be at most 30 days ahead"}}
+	}
+	return nil
 }
 
 // Hash is a stable SHA-256 hex digest of the normalized notification.
@@ -112,9 +147,18 @@ func (n NewNotification) Hash() string {
 		Channel   string `json:"channel"`
 		Content   string `json:"content"`
 		Priority  string `json:"priority"`
-	}{n.Recipient, string(n.Channel), n.Content, n.Priority.String()})
+		// omitempty keeps the hash of an unscheduled request unchanged (PF17).
+		ScheduledAt string `json:"scheduled_at,omitempty"`
+	}{n.Recipient, string(n.Channel), n.Content, n.Priority.String(), scheduledHash(n.ScheduledAt)})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+func scheduledHash(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 // ValidateBatch validates every item. Items are returned only when all are valid.

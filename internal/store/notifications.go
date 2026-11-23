@@ -33,11 +33,11 @@ func (s *Store) CreateNotification(ctx context.Context, p CreateParams) (CreateR
 		key = p.IdempotencyKey
 	}
 	n, err := scanNotification(s.pool.QueryRow(ctx,
-		`INSERT INTO notifications (idempotency_key, request_hash, channel, recipient, content, priority, correlation_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO notifications (idempotency_key, request_hash, channel, recipient, content, priority, correlation_id, scheduled_at, next_attempt_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, COALESCE($8::timestamptz, now()))
 		 ON CONFLICT (idempotency_key) DO NOTHING
 		 RETURNING `+notificationCols,
-		key, p.RequestHash, string(p.New.Channel), p.New.Recipient, p.New.Content, int16(p.New.Priority), p.CorrelationID))
+		key, p.RequestHash, string(p.New.Channel), p.New.Recipient, p.New.Content, int16(p.New.Priority), p.CorrelationID, p.New.ScheduledAt))
 	if err == nil {
 		return CreateResult{Notification: n}, nil
 	}
@@ -45,14 +45,24 @@ func (s *Store) CreateNotification(ctx context.Context, p CreateParams) (CreateR
 		return CreateResult{}, fmt.Errorf("insert notification: %w", err)
 	}
 
+	return s.ResolveReplay(ctx, p.IdempotencyKey, p.RequestHash)
+}
+
+// ResolveReplay returns the notification stored under an idempotency key with
+// Replayed set, without inserting. It returns ErrNotFound when no row has the
+// key and ErrIdempotencyConflict when the stored request hash differs.
+func (s *Store) ResolveReplay(ctx context.Context, key, hash string) (CreateResult, error) {
 	var stored *string
-	n, err = scanNotification(s.pool.QueryRow(ctx,
+	n, err := scanNotification(s.pool.QueryRow(ctx,
 		`SELECT `+notificationCols+`, request_hash FROM notifications WHERE idempotency_key = $1`,
-		p.IdempotencyKey), &stored)
+		key), &stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CreateResult{}, ErrNotFound
+	}
 	if err != nil {
 		return CreateResult{}, fmt.Errorf("resolve idempotency key: %w", err)
 	}
-	if stored == nil || *stored != p.RequestHash {
+	if stored == nil || *stored != hash {
 		return CreateResult{}, ErrIdempotencyConflict
 	}
 	return CreateResult{Notification: n, Replayed: true}, nil

@@ -55,7 +55,7 @@ func (s *Store) CreateBatch(ctx context.Context, p CreateBatchParams) (BatchResu
 		key, p.RequestHash, len(p.Items)).Scan(&batchID)
 	if errors.Is(err, pgx.ErrNoRows) && p.IdempotencyKey != "" {
 		_ = tx.Rollback(ctx)
-		return s.replayBatch(ctx, p.IdempotencyKey, p.RequestHash)
+		return s.ResolveBatchReplay(ctx, p.IdempotencyKey, p.RequestHash)
 	}
 	if err != nil {
 		return BatchResult{}, fmt.Errorf("insert batch: %w", err)
@@ -67,19 +67,21 @@ func (s *Store) CreateBatch(ctx context.Context, p CreateBatchParams) (BatchResu
 	recipients := make([]string, n)
 	contents := make([]string, n)
 	priorities := make([]int16, n)
+	scheduled := make([]*time.Time, n)
 	for i, it := range p.Items {
 		pos[i] = int32(i)
 		channels[i] = string(it.Channel)
 		recipients[i] = it.Recipient
 		contents[i] = it.Content
 		priorities[i] = int16(it.Priority)
+		scheduled[i] = it.ScheduledAt
 	}
 	rows, err := tx.Query(ctx,
-		`INSERT INTO notifications (batch_id, batch_position, channel, recipient, content, priority, correlation_id)
-		 SELECT $1::uuid, t.pos, t.channel, t.recipient, t.content, t.priority, $7
-		 FROM unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::smallint[]) AS t(pos, channel, recipient, content, priority)
+		`INSERT INTO notifications (batch_id, batch_position, channel, recipient, content, priority, correlation_id, scheduled_at, next_attempt_at)
+		 SELECT $1::uuid, t.pos, t.channel, t.recipient, t.content, t.priority, $7, t.scheduled_at, COALESCE(t.scheduled_at, now())
+		 FROM unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::smallint[], $8::timestamptz[]) AS t(pos, channel, recipient, content, priority, scheduled_at)
 		 RETURNING batch_position, id::text`,
-		batchID, pos, channels, recipients, contents, priorities, p.CorrelationID)
+		batchID, pos, channels, recipients, contents, priorities, p.CorrelationID, scheduled)
 	if err != nil {
 		return BatchResult{}, fmt.Errorf("insert batch items: %w", err)
 	}
@@ -106,12 +108,17 @@ func (s *Store) CreateBatch(ctx context.Context, p CreateBatchParams) (BatchResu
 	return BatchResult{BatchID: batchID, IDs: ids}, nil
 }
 
-// replayBatch resolves an already stored batch for an idempotency key.
-func (s *Store) replayBatch(ctx context.Context, key, hash string) (BatchResult, error) {
+// ResolveBatchReplay returns the batch stored under an idempotency key with
+// Replayed set, without inserting. It returns ErrNotFound when no batch has the
+// key and ErrIdempotencyConflict when the stored request hash differs.
+func (s *Store) ResolveBatchReplay(ctx context.Context, key, hash string) (BatchResult, error) {
 	var id string
 	var stored *string
 	if err := s.pool.QueryRow(ctx,
 		`SELECT id::text, request_hash FROM batches WHERE idempotency_key = $1`, key).Scan(&id, &stored); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return BatchResult{}, ErrNotFound
+		}
 		return BatchResult{}, fmt.Errorf("resolve batch idempotency key: %w", err)
 	}
 	if stored == nil || *stored != hash {
