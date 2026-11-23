@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,6 +17,13 @@ import (
 
 func main() {
 	os.Exit(run())
+}
+
+var envNames = map[string]string{
+	"failure_rate":   "MOCK_FAILURE_RATE",
+	"failure_status": "MOCK_FAILURE_STATUS",
+	"latency_ms":     "MOCK_LATENCY_MS",
+	"retry_after_s":  "MOCK_RETRY_AFTER_S",
 }
 
 // loadConfig reads the MOCK_* variables; errors name the variable, never its value.
@@ -49,7 +55,11 @@ func loadConfig(getenv func(string) string) (string, mockprovider.Config, error)
 		cfg.LatencyMS = n
 	}
 	if err := cfg.Validate(); err != nil {
-		return "", cfg, fmt.Errorf("invalid MOCK_* configuration: %w", err)
+		var fe *mockprovider.FieldError
+		if errors.As(err, &fe) {
+			return "", cfg, errors.New("invalid " + envNames[fe.Field])
+		}
+		return "", cfg, errors.New("invalid MOCK_* configuration")
 	}
 	return addr, cfg, nil
 }

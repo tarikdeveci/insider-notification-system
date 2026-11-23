@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -102,7 +104,9 @@ func TestRejectsMissingKeyAndBadBody(t *testing.T) {
 	if resp, _ := deliver(t, ts.URL, "", "a", "sms"); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("missing key status = %d", resp.StatusCode)
 	}
-	for _, body := range []string{"", "null", "[]", `{"to":"a"`, `{"channel":"sms"}`} {
+	for _, body := range []string{"", "null", "[]", `{"to":"a"`, `{"channel":"sms"}`,
+		`{"to":"a","channel":"sms","content":"hello"}]`, `{"to":"a","channel":"sms","content":"x"}{}`,
+		`{"to":"a","channel":"sms"}`, `{"to":"a","channel":"sms","content":null}`} {
 		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/", strings.NewReader(body))
 		req.Header.Set("Idempotency-Key", "k")
 		if resp, _ := doJSON(t, req); resp.StatusCode != http.StatusBadRequest {
@@ -203,7 +207,7 @@ func TestScriptPerRecipientThenDefault(t *testing.T) {
 	}
 	var got []int
 	for i := 0; i < 4; i++ {
-		r, _ := deliver(t, ts.URL, "s", "scripted", "sms")
+		r, _ := deliver(t, ts.URL, "s"+strconv.Itoa(i), "scripted", "sms")
 		got = append(got, r.StatusCode)
 	}
 	want := []int{503, 429, 202, 202} // empty script falls back to default rules
@@ -272,12 +276,14 @@ func TestInvalidControlConfigIs400(t *testing.T) {
 	bad := []string{
 		`{"failure_rate":1.5,"failure_status":503,"latency_ms":0,"retry_after_s":1}`,
 		`{"failure_rate":-0.1,"failure_status":503,"latency_ms":0,"retry_after_s":1}`,
-		`{"failure_rate":0,"failure_status":99,"latency_ms":0,"retry_after_s":1}`,
+		`{"failure_rate":0,"failure_status":199,"latency_ms":0,"retry_after_s":1}`,
 		`{"failure_rate":0,"failure_status":600,"latency_ms":0,"retry_after_s":1}`,
 		`{"failure_rate":0,"failure_status":503,"latency_ms":60001,"retry_after_s":1}`,
 		`{"failure_rate":0,"failure_status":503,"latency_ms":-1,"retry_after_s":1}`,
 		`{"failure_rate":0,"failure_status":503,"latency_ms":0,"retry_after_s":3601}`,
 		`{"failure_rate":0,"failure_status":503,"latency_ms":0,"retry_after_s":-1}`,
+		`{"failure_rate":0,"failure_status":100,"latency_ms":0,"retry_after_s":1}`,
+		`{"failure_rate":1e999,"failure_status":503,"latency_ms":0,"retry_after_s":1}`,
 		`not json`,
 		`{"failure_rate":0,"bogus":1}`,
 	}
@@ -286,7 +292,7 @@ func TestInvalidControlConfigIs400(t *testing.T) {
 			t.Fatalf("%s: status = %d", b, resp.StatusCode)
 		}
 	}
-	for _, b := range []string{`{"to":"","statuses":[202]}`, `{"to":"a","statuses":[]}`, `{"to":"a","statuses":[42]}`} {
+	for _, b := range []string{`{"to":"","statuses":[202]}`, `{"to":"a","statuses":[]}`, `{"to":"a","statuses":[42]}`, `{"to":"a","statuses":[100]}`, `{"to":"a","statuses":[600]}`} {
 		if resp, _ := control(t, http.MethodPost, ts.URL+"/_control/script", b); resp.StatusCode != 400 {
 			t.Fatalf("script %s: status = %d", b, resp.StatusCode)
 		}
@@ -294,5 +300,13 @@ func TestInvalidControlConfigIs400(t *testing.T) {
 	// config unchanged after rejected updates.
 	if _, cfg := control(t, http.MethodGet, ts.URL+"/_control/config", ""); cfg["failure_status"] != float64(503) {
 		t.Fatalf("config mutated: %v", cfg)
+	}
+}
+
+func TestConfigRejectsNaNAndInf(t *testing.T) {
+	for _, f := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if err := (Config{FailureRate: f, FailureStatus: 503}).Validate(); err == nil {
+			t.Fatalf("failure_rate %v accepted", f)
+		}
 	}
 }

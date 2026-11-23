@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"strconv"
@@ -20,6 +21,13 @@ import (
 )
 
 const maxBody = 1 << 20
+
+// Allowed response statuses. 1xx is excluded: Go follows a 1xx write with a final 200,
+// so the client would see success while the arrivals log said failure.
+const (
+	MinStatus = 200
+	MaxStatus = 599
+)
 
 // Config is the live behavior of the delivery endpoint.
 type Config struct {
@@ -30,17 +38,25 @@ type Config struct {
 	RetryAfterS   int     `json:"retry_after_s"`
 }
 
-// Validate checks every range; the error names the offending field only.
+// FieldError names the config field that failed validation, never its value.
+type FieldError struct {
+	Field string
+	Msg   string
+}
+
+func (e *FieldError) Error() string { return e.Field + " " + e.Msg }
+
+// Validate checks every range (NaN and Inf included); the error names the field only.
 func (c Config) Validate() error {
 	switch {
-	case c.FailureRate < 0 || c.FailureRate > 1:
-		return errors.New("failure_rate must be between 0 and 1")
-	case c.FailureStatus < 100 || c.FailureStatus > 599:
-		return errors.New("failure_status must be between 100 and 599")
+	case math.IsNaN(c.FailureRate) || math.IsInf(c.FailureRate, 0) || c.FailureRate < 0 || c.FailureRate > 1:
+		return &FieldError{"failure_rate", "must be between 0 and 1"}
+	case c.FailureStatus < MinStatus || c.FailureStatus > MaxStatus:
+		return &FieldError{"failure_status", "must be between 200 and 599"}
 	case c.LatencyMS < 0 || c.LatencyMS > 60000:
-		return errors.New("latency_ms must be between 0 and 60000")
+		return &FieldError{"latency_ms", "must be between 0 and 60000"}
 	case c.RetryAfterS < 0 || c.RetryAfterS > 3600:
-		return errors.New("retry_after_s must be between 0 and 3600")
+		return &FieldError{"retry_after_s", "must be between 0 and 3600"}
 	}
 	return nil
 }
@@ -137,7 +153,7 @@ func decodeStrict(r *http.Request, v any) error {
 	if err := dec.Decode(v); err != nil {
 		return err
 	}
-	if dec.More() {
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return errors.New("trailing data")
 	}
 	return nil
@@ -156,11 +172,11 @@ func (s *Server) handleDeliver(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		To      string `json:"to"`
-		Channel string `json:"channel"`
-		Content string `json:"content"`
+		To      string  `json:"to"`
+		Channel string  `json:"channel"`
+		Content *string `json:"content"`
 	}
-	if err := decodeStrict(r, &req); err != nil || req.To == "" || req.Channel == "" {
+	if err := decodeStrict(r, &req); err != nil || req.To == "" || req.Channel == "" || req.Content == nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -256,7 +272,7 @@ func (s *Server) handleScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, st := range req.Statuses {
-		if st < 100 || st > 599 {
+		if st < MinStatus || st > MaxStatus {
 			writeErr(w, http.StatusBadRequest, fmt.Sprintf("status %d out of range", st))
 			return
 		}
