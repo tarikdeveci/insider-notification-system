@@ -1,0 +1,581 @@
+openapi: 3.0.3
+info:
+  title: Notification API
+  version: 1.0.0
+  description: |
+    HTTP API of the notification system. Every 4xx and 5xx answer is an
+    application/problem+json document, including unknown paths (404) and
+    unsupported methods (405, which also carries an Allow header). Every
+    response carries an X-Request-ID header: a client supplied value of 1 to 64
+    characters from A-Z a-z 0-9 . _ - is echoed, otherwise one is generated.
+servers:
+  - url: http://127.0.0.1:8080
+tags:
+  - name: health
+  - name: notifications
+  - name: batches
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      summary: Liveness probe
+      responses:
+        "200":
+          description: The process is up.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+  /readyz:
+    get:
+      tags: [health]
+      operationId: getReadyz
+      summary: Readiness probe (Postgres and Redis)
+      responses:
+        "200":
+          description: Every dependency answered.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        "503":
+          description: At least one dependency failed. The body has the same shape with status degraded.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+  /v1/notifications:
+    post:
+      tags: [notifications]
+      operationId: createNotification
+      summary: Create one notification
+      description: |
+        Per-channel limits: sms needs an E.164 recipient (+ and 8 to 15 digits)
+        and content of at most 160 characters; email needs a plain address of at
+        most 254 characters and content of at most 10000 characters; push needs
+        a token of 1 to 255 characters without whitespace and content of at most
+        256 characters. Content limits count characters (runes), not bytes, and
+        content must not be blank. Send an Idempotency-Key to make retries safe:
+        the first request answers 201, a replay of the same payload answers 200
+        with the original notification, and the same key with a different payload
+        answers 409. Error causes: 400 malformed or non-object JSON, unknown
+        field, trailing data or a bad Idempotency-Key; 413 body over 64 KiB; 422
+        validation failed (the errors array lists every invalid field).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateNotificationRequest"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+        "200":
+          description: Idempotent replay, the original notification.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+        "400":
+          $ref: "#/components/responses/ProblemResponse"
+        "409":
+          $ref: "#/components/responses/ProblemResponse"
+        "413":
+          $ref: "#/components/responses/ProblemResponse"
+        "422":
+          $ref: "#/components/responses/ProblemResponse"
+        "500":
+          $ref: "#/components/responses/ProblemResponse"
+    get:
+      tags: [notifications]
+      operationId: listNotifications
+      summary: List notifications, newest first, with cursor pagination
+      description: |
+        400 means an invalid query parameter; the errors array names each one.
+        next_cursor is null on the last page.
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/Status"
+        - name: channel
+          in: query
+          schema:
+            $ref: "#/components/schemas/Channel"
+        - name: batch_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: created_from
+          in: query
+          description: Lower bound, RFC 3339. Must not be after created_to.
+          schema:
+            type: string
+            format: date-time
+        - name: created_to
+          in: query
+          description: Upper bound, RFC 3339.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          description: Opaque value taken from next_cursor of a previous page.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: One page of notifications.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationList"
+        "400":
+          $ref: "#/components/responses/ProblemResponse"
+        "500":
+          $ref: "#/components/responses/ProblemResponse"
+  /v1/notifications/batch:
+    post:
+      tags: [batches]
+      operationId: createBatch
+      summary: Create up to 1000 notifications atomically
+      description: |
+        All items are validated first; if any is invalid nothing is inserted and
+        the answer is 422 with an errors entry (carrying index) per problem.
+        An empty batch or more than 1000 items is also 422. Identical items
+        inside one batch are allowed. Idempotency-Key semantics match single
+        create: 201 first time, 200 replay (same ids in request order), 409 for
+        a different payload. 400 is malformed JSON, unknown field, trailing data
+        or a bad Idempotency-Key; 413 is a body over 8 MiB.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchRequest"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchCreated"
+        "200":
+          description: Idempotent replay of an earlier batch.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchCreated"
+        "400":
+          $ref: "#/components/responses/ProblemResponse"
+        "409":
+          $ref: "#/components/responses/ProblemResponse"
+        "413":
+          $ref: "#/components/responses/ProblemResponse"
+        "422":
+          $ref: "#/components/responses/ProblemResponse"
+        "500":
+          $ref: "#/components/responses/ProblemResponse"
+  /v1/notifications/{id}:
+    get:
+      tags: [notifications]
+      operationId: getNotification
+      summary: Get one notification with its delivery attempts
+      description: A malformed id is answered with 404, the same as an unknown id.
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The notification.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationDetail"
+        "404":
+          $ref: "#/components/responses/ProblemResponse"
+        "500":
+          $ref: "#/components/responses/ProblemResponse"
+  /v1/notifications/{id}/cancel:
+    post:
+      tags: [notifications]
+      operationId: cancelNotification
+      summary: Cancel a pending notification
+      description: |
+        200 returns the cancelled notification. 409 means it is no longer
+        pending. 404 means no such notification (a malformed id too).
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Cancelled, the updated notification.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+        "404":
+          $ref: "#/components/responses/ProblemResponse"
+        "409":
+          $ref: "#/components/responses/ProblemResponse"
+        "500":
+          $ref: "#/components/responses/ProblemResponse"
+  /v1/batches/{id}:
+    get:
+      tags: [batches]
+      operationId: getBatch
+      summary: Get a batch with per-status counts
+      description: A malformed id is answered with 404, the same as an unknown id.
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The batch summary.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchSummary"
+        "404":
+          $ref: "#/components/responses/ProblemResponse"
+        "500":
+          $ref: "#/components/responses/ProblemResponse"
+  /v1/batches/{id}/cancel:
+    post:
+      tags: [batches]
+      operationId: cancelBatch
+      summary: Cancel every pending notification of a batch
+      description: |
+        200 reports how many notifications changed, possibly 0 when none were
+        pending. 404 means no such batch (a malformed id too).
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Done. cancelled is the number of notifications changed.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cancelled]
+                properties:
+                  cancelled:
+                    type: integer
+                    minimum: 0
+        "404":
+          $ref: "#/components/responses/ProblemResponse"
+        "500":
+          $ref: "#/components/responses/ProblemResponse"
+components:
+  headers:
+    XRequestID:
+      description: Correlation id of the request (echoed from the client or generated).
+      schema:
+        type: string
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Optional. 1 to 128 printable ASCII characters (0x21 to 0x7E, so no
+        spaces). Sending the header more than once is rejected with 400.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: "^[\\x21-\\x7E]{1,128}$"
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    ProblemResponse:
+      description: Error, as a problem document (the cause depends on the status code, see the operation description).
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/XRequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    Channel:
+      type: string
+      enum: [sms, email, push]
+    Priority:
+      type: string
+      enum: [high, normal, low]
+    Status:
+      type: string
+      enum: [pending, processing, sent, failed, cancelled]
+    Readiness:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        checks:
+          type: object
+          required: [postgres, redis]
+          properties:
+            postgres:
+              type: string
+              enum: [ok, fail]
+            redis:
+              type: string
+              enum: [ok, fail]
+    CreateNotificationRequest:
+      type: object
+      additionalProperties: false
+      required: [recipient, channel, content]
+      properties:
+        recipient:
+          type: string
+          description: |
+            sms: E.164 number such as +905551234567. email: plain address, at
+            most 254 characters. push: device token, 1 to 255 characters, no
+            whitespace.
+        channel:
+          $ref: "#/components/schemas/Channel"
+        content:
+          type: string
+          description: Not blank. At most 160 characters for sms, 10000 for email, 256 for push (counted in characters, not bytes).
+        priority:
+          allOf:
+            - $ref: "#/components/schemas/Priority"
+          default: normal
+          description: Omitting it is the same as normal.
+    Notification:
+      type: object
+      required:
+        - id
+        - batch_id
+        - channel
+        - recipient
+        - content
+        - priority
+        - status
+        - attempts
+        - max_attempts
+        - next_attempt_at
+        - provider_message_id
+        - last_error
+        - correlation_id
+        - created_at
+        - updated_at
+        - sent_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        batch_id:
+          type: string
+          format: uuid
+          nullable: true
+        channel:
+          $ref: "#/components/schemas/Channel"
+        recipient:
+          type: string
+        content:
+          type: string
+        priority:
+          $ref: "#/components/schemas/Priority"
+        status:
+          $ref: "#/components/schemas/Status"
+        attempts:
+          type: integer
+        max_attempts:
+          type: integer
+        next_attempt_at:
+          type: string
+          format: date-time
+        provider_message_id:
+          type: string
+          nullable: true
+        last_error:
+          type: string
+          nullable: true
+        correlation_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        sent_at:
+          type: string
+          format: date-time
+          nullable: true
+    DeliveryAttempt:
+      type: object
+      required: [attempt_no, started_at, finished_at, http_status, error, duration_ms]
+      properties:
+        attempt_no:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        http_status:
+          type: integer
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        duration_ms:
+          type: integer
+          nullable: true
+    NotificationDetail:
+      allOf:
+        - $ref: "#/components/schemas/Notification"
+        - type: object
+          required: [delivery_attempts]
+          properties:
+            delivery_attempts:
+              type: array
+              items:
+                $ref: "#/components/schemas/DeliveryAttempt"
+    NotificationList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Notification"
+        next_cursor:
+          type: string
+          nullable: true
+    BatchRequest:
+      type: object
+      additionalProperties: false
+      required: [notifications]
+      properties:
+        notifications:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: "#/components/schemas/CreateNotificationRequest"
+    BatchCreated:
+      type: object
+      required: [batch_id, notification_ids]
+      properties:
+        batch_id:
+          type: string
+          format: uuid
+        notification_ids:
+          type: array
+          description: In request order.
+          items:
+            type: string
+            format: uuid
+    BatchSummary:
+      type: object
+      required: [id, total, created_at, counts]
+      properties:
+        id:
+          type: string
+          format: uuid
+        total:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        counts:
+          type: object
+          description: Notification count per status that occurs in the batch.
+          additionalProperties:
+            type: integer
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          example: about:blank
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        request_id:
+          type: string
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              index:
+                type: integer
+                description: Position of the offending item in a batch.
+              field:
+                type: string
+              message:
+                type: string
