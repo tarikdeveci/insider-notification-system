@@ -67,7 +67,7 @@ paths:
       description: |
         Per-channel limits: sms needs an E.164 recipient (+ and 8 to 15 digits)
         and content of at most 160 characters; email needs a plain address of at
-        most 254 characters and content of at most 10000 characters; push needs
+        most 254 bytes (UTF-8) and content of at most 10000 characters; push needs
         a token of 1 to 255 characters without whitespace and content of at most
         256 characters. Content limits count characters (runes), not bytes, and
         content must not be blank. Send an Idempotency-Key to make retries safe:
@@ -393,7 +393,7 @@ components:
           type: string
           description: |
             sms: E.164 number such as +905551234567. email: plain address, at
-            most 254 characters. push: device token, 1 to 255 characters, no
+            most 254 bytes (UTF-8). push: device token, 1 to 255 characters, no
             whitespace.
         channel:
           $ref: "#/components/schemas/Channel"
