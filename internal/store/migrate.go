@@ -14,7 +14,7 @@ import (
 )
 
 // Migrate applies all pending up migrations. It is a no-op when the schema is current.
-func Migrate(dsn string) error {
+func Migrate(dsn string) (err error) {
 	src, err := iofs.New(migrations.FS, ".")
 	if err != nil {
 		return fmt.Errorf("open migration source: %w", err)
@@ -23,7 +23,12 @@ func Migrate(dsn string) error {
 	if err != nil {
 		return fmt.Errorf("init migrator: %w", err)
 	}
-	defer m.Close()
+	defer func() {
+		srcErr, dbErr := m.Close()
+		if cerr := errors.Join(srcErr, dbErr); cerr != nil && err == nil {
+			err = fmt.Errorf("close migrator: %w", cerr)
+		}
+	}()
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("apply migrations: %w", err)
 	}

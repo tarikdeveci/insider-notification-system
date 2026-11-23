@@ -44,7 +44,9 @@ func TestCreateWithoutKeyTwiceMakesTwoRows(t *testing.T) {
 	a := mustCreate(t, s, domain.ChannelSMS, "same")
 	b := mustCreate(t, s, domain.ChannelSMS, "same")
 	var n int
-	pool.QueryRow(context.Background(), `SELECT count(*) FROM notifications`).Scan(&n)
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM notifications`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
 	if a.ID == b.ID || n != 2 {
 		t.Fatalf("ids %s %s rows %d", a.ID, b.ID, n)
 	}
@@ -101,7 +103,9 @@ func TestCreateConcurrentSameKey(t *testing.T) {
 		}
 	}
 	var rows int
-	pool.QueryRow(ctx, `SELECT count(*) FROM notifications`).Scan(&rows)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM notifications`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
 	if rows != 1 {
 		t.Fatalf("rows = %d", rows)
 	}

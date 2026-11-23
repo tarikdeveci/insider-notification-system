@@ -53,7 +53,11 @@ func run() int {
 	}
 	opt.PoolSize = cfg.RedisPoolSize
 	rdb := redis.NewClient(opt)
-	defer rdb.Close()
+	defer func() {
+		if err := rdb.Close(); err != nil {
+			log.Error("close redis client", observability.ErrAttrs(err)...)
+		}
+	}()
 
 	handler := api.NewServer(api.Deps{
 		Store:  store.New(pool),

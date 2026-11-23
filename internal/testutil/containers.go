@@ -78,7 +78,11 @@ func PostgresDSN(t testing.TB) string {
 	if err != nil {
 		t.Fatalf("connect to postgres container: %v", err)
 	}
-	defer admin.Close(ctx)
+	defer func() {
+		if err := admin.Close(ctx); err != nil {
+			t.Errorf("close admin connection: %v", err)
+		}
+	}()
 	if _, err := admin.Exec(ctx, "CREATE DATABASE "+quoted); err != nil {
 		t.Fatalf("create database: %v", err)
 	}
@@ -90,7 +94,11 @@ func PostgresDSN(t testing.TB) string {
 			t.Errorf("drop database: connect: %v", err)
 			return
 		}
-		defer conn.Close(ctx)
+		defer func() {
+			if err := conn.Close(ctx); err != nil {
+				t.Errorf("drop database: close: %v", err)
+			}
+		}()
 		if _, err := conn.Exec(ctx, "DROP DATABASE "+quoted+" WITH (FORCE)"); err != nil {
 			t.Errorf("drop database: %v", err)
 		}

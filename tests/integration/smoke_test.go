@@ -36,7 +36,11 @@ func TestRedisSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := goredis.NewClient(opt)
-	defer c.Close()
+	defer func() {
+		if err := c.Close(); err != nil {
+			t.Errorf("close redis client: %v", err)
+		}
+	}()
 	if got := c.Ping(ctx).Val(); got != "PONG" {
 		t.Fatalf("ping = %q", got)
 	}
