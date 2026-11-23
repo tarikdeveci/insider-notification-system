@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/tarikdeveci/insider-notification-system/internal/domain"
 	"github.com/tarikdeveci/insider-notification-system/internal/store"
 )
@@ -45,22 +47,31 @@ func TestCancelRacesClaimExactlyOneWins(t *testing.T) {
 	for round := 0; round < 20; round++ {
 		n := mustCreate(t, s, domain.ChannelSMS, "race")
 		var cancelled, claimed atomic.Int32
+		var cancelErr, claimErr error
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			if _, err := s.CancelNotification(ctx, n.ID); err == nil {
+			_, cancelErr = s.CancelNotification(ctx, n.ID)
+			if cancelErr == nil {
 				cancelled.Add(1)
 			}
 		}()
 		go func() {
 			defer wg.Done()
-			tag, err := pool.Exec(ctx, `UPDATE notifications SET status='processing' WHERE id=$1::uuid AND status='pending'`, n.ID)
-			if err == nil && tag.RowsAffected() == 1 {
+			var tag pgconn.CommandTag
+			tag, claimErr = pool.Exec(ctx, `UPDATE notifications SET status='processing' WHERE id=$1::uuid AND status='pending'`, n.ID)
+			if claimErr == nil && tag.RowsAffected() == 1 {
 				claimed.Add(1)
 			}
 		}()
 		wg.Wait()
+		if cancelErr != nil && !errors.Is(cancelErr, store.ErrNotPending) {
+			t.Fatalf("round %d: cancel returned unexpected error: %v", round, cancelErr)
+		}
+		if claimErr != nil {
+			t.Fatalf("round %d: claim returned error: %v", round, claimErr)
+		}
 		if cancelled.Load()+claimed.Load() != 1 {
 			t.Fatalf("round %d: cancelled=%d claimed=%d", round, cancelled.Load(), claimed.Load())
 		}
