@@ -149,6 +149,25 @@ func (s *server) cancelNotification(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *server) retryNotification(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !domain.IsUUID(id) {
+		writeProblem(w, r, http.StatusNotFound, "notification not found", nil)
+		return
+	}
+	n, err := s.Store.RetryNotification(r.Context(), id)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeProblem(w, r, http.StatusNotFound, "notification not found", nil)
+	case errors.Is(err, store.ErrNotFailed):
+		writeProblem(w, r, http.StatusConflict, "only failed notifications can be retried", nil)
+	case err != nil:
+		internalError(w, r, s.Logger, err)
+	default:
+		writeJSON(w, http.StatusOK, toDTO(n))
+	}
+}
+
 func (s *server) listNotifications(w http.ResponseWriter, r *http.Request) {
 	f, errs := parseListQuery(r.URL.Query())
 	if len(errs) > 0 {

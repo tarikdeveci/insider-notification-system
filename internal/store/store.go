@@ -14,6 +14,7 @@ import (
 var (
 	ErrNotFound            = errors.New("not found")
 	ErrNotPending          = errors.New("notification is not pending")
+	ErrNotFailed           = errors.New("notification is not failed")
 	ErrIdempotencyConflict = errors.New("idempotency key reused with a different payload")
 )
 

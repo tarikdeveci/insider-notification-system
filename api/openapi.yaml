@@ -141,6 +141,9 @@ paths:
       parameters:
         - name: status
           in: query
+          description: |
+            status=failed is the dead letter view. Failed rows can be requeued
+            with POST /v1/notifications/{id}/retry.
           schema:
             $ref: "#/components/schemas/Status"
         - name: channel
@@ -278,6 +281,39 @@ paths:
       responses:
         "200":
           description: Cancelled, the updated notification.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+        "404":
+          $ref: "#/components/responses/ProblemResponse"
+        "409":
+          $ref: "#/components/responses/ProblemResponse"
+        "500":
+          $ref: "#/components/responses/ProblemResponse"
+  /v1/notifications/{id}/retry:
+    post:
+      tags: [notifications]
+      operationId: retryNotification
+      summary: Requeue a failed notification
+      description: |
+        Manual retry for notifications in the dead letter view (list with
+        status=failed), for example after a provider outage longer than the
+        retry budget. A failed notification becomes pending again with attempts
+        reset to 0 and next_attempt_at now. last_error is kept for history. The
+        max delivery age is still measured from COALESCE(scheduled_at,
+        created_at), so an old notification gets one fresh attempt and then
+        expires if it fails again. 200 returns the updated notification. 409
+        means it is not failed. 404 means no such notification (a malformed id
+        too).
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Requeued, the updated notification.
           headers:
             X-Request-ID:
               $ref: "#/components/headers/XRequestID"
