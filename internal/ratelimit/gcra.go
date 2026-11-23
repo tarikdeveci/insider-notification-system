@@ -58,7 +58,8 @@ func WithGrantHook(f func(channel string, slot time.Time)) Option {
 	return func(l *Limiter) { l.hook = f }
 }
 
-// New builds a Limiter on the given Redis client.
+// New builds a Limiter on the given Redis client. The client must have
+// ContextTimeoutEnabled set, otherwise the max wait bound does not cover stalled Redis I/O.
 func New(rdb redis.UniversalClient, opts ...Option) *Limiter {
 	l := &Limiter{
 		rdb:      rdb,
