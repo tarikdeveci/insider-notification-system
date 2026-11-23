@@ -101,4 +101,4 @@ Preflight rulings (Codex conflict scan of the plan against the spec, PF1 to PF8)
 
 ### CP1 gate
 
-Gate: make test, make e2e, make lint (results pending)
+Gate: passed at commit 63addda on a clean tree. `make test` (with -race): all 7 packages ok. `make lint`: 0 issues. `make e2e` (with -race): ok, stack torn down, no containers left.
