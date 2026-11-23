@@ -401,7 +401,8 @@ func TestGracefulShutdownReleasesUnstartedRows(t *testing.T) {
 	r.cancel()
 	waitFor(t, "unstarted rows released", func() bool { return e.count(t, "pending") == 2 })
 	select {
-	case <-r.done:
+	case err := <-r.done:
+		_ = err
 		t.Fatal("Run returned while a send was still in flight")
 	case <-time.After(100 * time.Millisecond):
 	}
@@ -471,7 +472,7 @@ func TestIdleBackoff(t *testing.T) {
 	// Empty claims: gaps grow 40, 80, 160 and then stay at the 160ms cap.
 	for i, atLeast := range []time.Duration{35, 75, 155, 155} {
 		if g := gap(i); g < atLeast*time.Millisecond {
-			t.Errorf("gap %d = %v, want at least %vms", i, g, atLeast)
+			t.Errorf("gap %d = %v, want at least %vms", i, g, int64(atLeast))
 		}
 	}
 	if g := gap(4); g > 30*time.Millisecond {
@@ -482,11 +483,87 @@ func TestIdleBackoff(t *testing.T) {
 	}
 }
 
+// A zero Settings must still back off from 200ms up to the 1s default cap.
+func TestIdleBackoffDefaultsGrowToOneSecond(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		times []time.Time
+	)
+	q := &fakeQueue{onClaim: func() []store.QueueRow {
+		mu.Lock()
+		defer mu.Unlock()
+		times = append(times, time.Now())
+		return nil
+	}}
+	r := start(t, worker.New(q, funcSender(okSender), okLimiter, worker.Settings{}, worker.WithChannels(domain.ChannelSMS)))
+	waitFor(t, "five claim calls", func() bool { mu.Lock(); defer mu.Unlock(); return len(times) >= 5 })
+	r.cancel()
+	r.wait(t)
+	mu.Lock()
+	defer mu.Unlock()
+	// Gaps: 200, 400, 800, then capped at 1000ms.
+	for i, atLeast := range []time.Duration{190, 390, 790, 990} {
+		if g := times[i+1].Sub(times[i]); g < atLeast*time.Millisecond {
+			t.Errorf("gap %d = %v, want at least %vms", i, g, int64(atLeast))
+		}
+	}
+}
+
+// startBlockedQueue is a Queue whose StartAttempt blocks until its ctx is done.
+type startBlockedQueue struct {
+	fakeQueue
+	entered chan struct{}
+}
+
+func (q *startBlockedQueue) StartAttempt(ctx context.Context, _, _ string) (int, time.Time, error) {
+	q.entered <- struct{}{}
+	<-ctx.Done()
+	return 0, time.Time{}, ctx.Err()
+}
+
+func TestShutdownDuringStartAttemptNeverSends(t *testing.T) {
+	var claimed atomic.Bool
+	q := &startBlockedQueue{entered: make(chan struct{}, 4)}
+	q.onClaim = func() []store.QueueRow {
+		if claimed.Swap(true) {
+			return nil
+		}
+		return []store.QueueRow{{ID: "11111111-1111-1111-1111-111111111111", Channel: domain.ChannelSMS, MaxAttempts: 8, CreatedAt: time.Now()}}
+	}
+	var sends atomic.Int32
+	sender := funcSender(func(ctx context.Context, m provider.Message) provider.Result {
+		sends.Add(1)
+		return okSender(ctx, m)
+	})
+	s := testSettings()
+	s.ShutdownTimeout = 5 * time.Second
+	logs := &syncBuf{}
+	r := start(t, worker.New(q, sender, okLimiter, s, worker.WithChannels(domain.ChannelSMS),
+		worker.WithLogger(observability.NewLogger(logs, "debug"))))
+	select {
+	case <-q.entered:
+	case <-time.After(15 * time.Second):
+		t.Fatal("StartAttempt was never reached")
+	}
+	began := time.Now()
+	r.cancel()
+	r.wait(t)
+	if d := time.Since(began); d >= s.ShutdownTimeout {
+		t.Fatalf("Run took %v, want it to return before SHUTDOWN_TIMEOUT %v", d, s.ShutdownTimeout)
+	}
+	if n := sends.Load(); n != 0 {
+		t.Fatalf("Send called %d times after shutdown began", n)
+	}
+	if strings.Contains(logs.String(), `"level":"ERROR"`) {
+		t.Errorf("shutdown during StartAttempt must not log errors: %s", logs.String())
+	}
+}
+
 func TestSuccessMarksSentAndPublishesNothingYet(t *testing.T) {
 	e := newEnv(t)
 	rdb := testRedis(t)
 	ps := rdb.Subscribe(context.Background(), "notification-status")
-	defer ps.Close()
+	defer func() { _ = ps.Close() }()
 	if _, err := ps.Receive(context.Background()); err != nil { // subscription confirmation
 		t.Fatal(err)
 	}

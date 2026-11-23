@@ -113,8 +113,9 @@ func sleep(ctx context.Context, d time.Duration) bool {
 }
 
 // process runs one claimed row: permit, StartAttempt, send, result. ctx is the
-// run context (cancelled at shutdown); drain outlives it by ShutdownTimeout and
-// carries everything after the attempt has started.
+// run context (cancelled at shutdown) and bounds everything up to StartAttempt;
+// drain outlives it by ShutdownTimeout and carries Send and the result write of
+// an attempt that has started.
 func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, row store.QueueRow) {
 	ch := string(row.Channel)
 	log = log.With("notification_id", row.ID, "correlation_id", row.CorrelationID)
@@ -142,9 +143,15 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, row store
 	}
 	e.obs.RateLimitWait(ch, waited)
 
-	attempt, startedAt, err := e.q.StartAttempt(drain, row.ID, row.LeaseToken)
+	// StartAttempt runs on the run ctx: once shutdown begins no new attempt may start.
+	attempt, startedAt, err := e.q.StartAttempt(ctx, row.ID, row.LeaseToken)
 	if errors.Is(err, store.ErrLeaseLost) {
 		log.Debug("lease lost before attempt start, dropping row")
+		return
+	}
+	if err != nil && ctx.Err() != nil {
+		// Unknown whether the attempt was counted: the reaper takes the row after the lease expires.
+		log.Info("attempt not started", "reason", releaseShutdown)
 		return
 	}
 	if err != nil {

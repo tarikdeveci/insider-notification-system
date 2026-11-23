@@ -98,6 +98,9 @@ func (s Settings) withDefaults() Settings {
 	if s.IdleMin <= 0 {
 		s.IdleMin = d.IdleMin
 	}
+	if s.IdleMax <= 0 {
+		s.IdleMax = d.IdleMax
+	}
 	if s.IdleMax < s.IdleMin {
 		s.IdleMax = s.IdleMin
 	}
