@@ -45,6 +45,10 @@ func (s *server) routes() []route {
 		{"POST /v1/notifications", s.createNotification},
 		{"GET /v1/notifications/{id}", s.getNotification},
 		{"GET /v1/notifications", s.listNotifications},
+		{"POST /v1/notifications/batch", s.createBatch},
+		{"POST /v1/notifications/{id}/cancel", s.cancelNotification},
+		{"GET /v1/batches/{id}", s.getBatch},
+		{"POST /v1/batches/{id}/cancel", s.cancelBatch},
 	}
 }
 
