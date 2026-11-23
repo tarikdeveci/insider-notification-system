@@ -42,6 +42,9 @@ func (s *server) routes() []route {
 	return []route{
 		{"GET /healthz", s.healthz},
 		{"GET /readyz", s.readyz},
+		{"POST /v1/notifications", s.createNotification},
+		{"GET /v1/notifications/{id}", s.getNotification},
+		{"GET /v1/notifications", s.listNotifications},
 	}
 }
 

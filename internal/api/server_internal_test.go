@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,6 +20,20 @@ func TestPathValueSurvivesProblemMux(t *testing.T) {
 	problemMux{mux}.ServeHTTP(rr, httptest.NewRequest("GET", "/things/abc", nil))
 	if rr.Code != 200 || rr.Body.String() != "abc" {
 		t.Fatalf("code=%d body=%q", rr.Code, rr.Body)
+	}
+}
+
+func TestInternalErrorHidesErrorText(t *testing.T) {
+	const marker = "SENSITIVE-recipient-+905551234567"
+	var buf bytes.Buffer
+	log := observability.NewLogger(&buf, "info")
+	rr := httptest.NewRecorder()
+	internalError(rr, httptest.NewRequest("GET", "/x", nil), log, errors.New("insert failed for "+marker))
+	if rr.Code != 500 || strings.Contains(rr.Body.String(), marker) {
+		t.Fatalf("code=%d body=%s", rr.Code, rr.Body)
+	}
+	if strings.Contains(buf.String(), marker) || !strings.Contains(buf.String(), "err_type") {
+		t.Fatalf("log: %s", buf.String())
 	}
 }
 
