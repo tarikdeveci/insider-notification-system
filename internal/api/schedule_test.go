@@ -154,6 +154,12 @@ func TestBatchScheduled(t *testing.T) {
 	if c := call(t, h, "POST", "/v1/notifications/batch", changed, key); c.Code != 409 {
 		t.Fatalf("different body: %d", c.Code)
 	}
+	// A different body that also fails the schedule check must still be a 409
+	// (batchScheduleRejected resolves the stored key before showing 422).
+	pastChanged := `{"notifications":[` + item(`,"scheduled_at":"`+at+`"`) + `]}`
+	if c := call(t, h, "POST", "/v1/notifications/batch", pastChanged, key); c.Code != 409 {
+		t.Fatalf("different body with past schedule: %d %s", c.Code, c.Body)
+	}
 	fresh := call(t, h, "POST", "/v1/notifications/batch", body, map[string]string{"Idempotency-Key": "bsched2"})
 	if fresh.Code != 422 {
 		t.Fatalf("new key past time: %d %s", fresh.Code, fresh.Body)

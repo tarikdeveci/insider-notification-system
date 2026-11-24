@@ -124,6 +124,8 @@ func TestRetryRacesReaperAndCancel(t *testing.T) {
 
 	t.Run("reaper never reverts a retried row", func(t *testing.T) {
 		n := failedRow(t, s, pool)
+		// Expired lease, so only the status guard keeps the reaper off the row.
+		exec(t, pool, `UPDATE notifications SET locked_until = now() - interval '1 minute' WHERE id=$1::uuid`, n.ID)
 		var wg sync.WaitGroup
 		wg.Add(2)
 		var retryErr, reapErr error
