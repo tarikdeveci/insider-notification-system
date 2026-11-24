@@ -208,11 +208,14 @@ func (s *Store) FinishAttempt(ctx context.Context, p FinishParams) error {
 }
 
 // Release returns a claimed but unstarted row to pending: lease cleared,
-// attempts and next_attempt_at unchanged. Zero rows: ErrLeaseLost.
-func (s *Store) Release(ctx context.Context, id, token string) error {
+// attempts unchanged. A positive delay sets next_attempt_at = now() + delay
+// (database clock) so the claim does not return the row at once; zero leaves
+// next_attempt_at as it was. Zero rows: ErrLeaseLost.
+func (s *Store) Release(ctx context.Context, id, token string, delay time.Duration) error {
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE notifications SET status = 'pending', lease_token = NULL, locked_until = NULL, updated_at = now()
-		 WHERE id = $1::uuid AND lease_token = $2::uuid AND status = 'processing'`, id, token)
+		`UPDATE notifications SET status = 'pending', lease_token = NULL, locked_until = NULL, updated_at = now(),
+		        next_attempt_at = CASE WHEN $3::float8 > 0 THEN now() + make_interval(secs => $3::float8) ELSE next_attempt_at END
+		 WHERE id = $1::uuid AND lease_token = $2::uuid AND status = 'processing'`, id, token, delay.Seconds())
 	if err != nil {
 		return fmt.Errorf("release: %w", err)
 	}

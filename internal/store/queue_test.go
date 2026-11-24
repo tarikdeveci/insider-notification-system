@@ -458,21 +458,42 @@ func TestThrottledResultGivesAttemptBack(t *testing.T) {
 	}
 }
 
+// A release with a delay pushes next_attempt_at into the future by the database
+// clock, so the same rows do not come straight back from the claim.
+func TestReleaseWithDelayDefersNextAttempt(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	row, tok := claimOne(t, s, pool)
+	if err := s.Release(ctx, row.ID, tok, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	var secs float64
+	if err := pool.QueryRow(ctx, `SELECT extract(epoch FROM (next_attempt_at - now())) FROM notifications WHERE id = $1::uuid`, row.ID).Scan(&secs); err != nil {
+		t.Fatal(err)
+	}
+	if secs < 3500 || secs > 3601 {
+		t.Fatalf("next_attempt_at is %.0fs ahead, want about 3600", secs)
+	}
+	if rows, err := s.Claim(ctx, domain.ChannelSMS, 1, newToken(t, pool)); err != nil || len(rows) != 0 {
+		t.Fatalf("a delayed row must not be claimable: %v %d", err, len(rows))
+	}
+}
+
 func TestReleaseDoesNotUseAttempt(t *testing.T) {
 	s, pool := newStore(t)
 	ctx := context.Background()
 	row, tok := claimOne(t, s, pool)
-	if err := s.Release(ctx, row.ID, newToken(t, pool)); !errors.Is(err, store.ErrLeaseLost) {
+	if err := s.Release(ctx, row.ID, newToken(t, pool), 0); !errors.Is(err, store.ErrLeaseLost) {
 		t.Fatalf("stale release: %v", err)
 	}
-	if err := s.Release(ctx, row.ID, tok); err != nil {
+	if err := s.Release(ctx, row.ID, tok, 0); err != nil {
 		t.Fatal(err)
 	}
 	st := state(t, pool, row.ID)
 	if st.status != "pending" || st.attempts != 0 || st.lease != nil || st.locked != nil || !st.next.Equal(row.NextAttemptAt) {
 		t.Fatalf("state: %+v", st)
 	}
-	if err := s.Release(ctx, row.ID, tok); !errors.Is(err, store.ErrLeaseLost) {
+	if err := s.Release(ctx, row.ID, tok, 0); !errors.Is(err, store.ErrLeaseLost) {
 		t.Fatalf("second release: %v", err)
 	}
 	if n := attemptCount(t, pool, row.ID); n != 0 {

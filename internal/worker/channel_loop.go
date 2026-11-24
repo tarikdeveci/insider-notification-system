@@ -54,6 +54,7 @@ func (e *Engine) channelLoop(ctx, drain context.Context, ch domain.Channel) {
 
 	brk := e.brk[ch]
 	idle := e.set.IdleMin
+	lb := newLimiterBackoff(e.set.IdleMax, 16*e.set.IdleMax)
 	for {
 		if !e.pauseWhileOpen(ctx, brk) {
 			return
@@ -61,6 +62,19 @@ func (e *Engine) channelLoop(ctx, drain context.Context, ch domain.Channel) {
 		n, ok := takeSlots(ctx, slots, limit)
 		if !ok {
 			return
+		}
+		// While the limiter fails, claiming only produces rows that bounce back.
+		// Checked after the slot wait: a slot frees up as a failed row is released,
+		// which is exactly when the pause starts.
+		// The slots go back before sleeping so the next round sees every free slot.
+		if d := lb.remaining(time.Now()); d > 0 {
+			for i := 0; i < n; i++ {
+				<-slots
+			}
+			if !sleep(ctx, d) {
+				return
+			}
+			continue
 		}
 		// Waiting for a slot can outlast a breaker opening: decide again with slots in hand.
 		mode, wait := brk.gate()
@@ -100,7 +114,7 @@ func (e *Engine) channelLoop(ctx, drain context.Context, ch domain.Channel) {
 			go func() {
 				defer wg.Done()
 				defer func() { <-slots }()
-				e.process(ctx, drain, log, row)
+				e.process(ctx, drain, log, lb, row)
 			}()
 		}
 	}
@@ -144,7 +158,7 @@ func sleep(ctx context.Context, d time.Duration) bool {
 // run context (cancelled at shutdown) and bounds everything up to StartAttempt;
 // drain outlives it by ShutdownTimeout and carries Send and the result write of
 // an attempt that has started.
-func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, row store.QueueRow) {
+func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, lb *limiterBackoff, row store.QueueRow) {
 	ch := string(row.Channel)
 	// The deliver span continues the trace the API stored on the row; an empty or
 	// malformed traceparent just starts a new trace. drain carries the same span
@@ -166,7 +180,7 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, row store
 	brk := e.brk[row.Channel]
 	if mode, _ := brk.gate(); mode == gateNone {
 		// Claimed just before the breaker opened: do not wait for a permit it will not use.
-		e.release(ctx, log, row, releaseBreakerOpen)
+		e.release(ctx, log, row, releaseBreakerOpen, 0)
 		return
 	}
 
@@ -188,14 +202,25 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, row store
 		if reason == releaseWaitExceeded {
 			e.obs.RateLimitWait(ch, waited)
 		}
-		e.release(ctx, log, row, reason)
+		var delay time.Duration
+		if reason == releaseLimiterError {
+			// The limiter is failing: hold the row (and the loop) back so an outage
+			// is not a hot claim and release cycle. One Warn per outage.
+			var first bool
+			delay, first = lb.fail(time.Now())
+			if first {
+				log.Warn("rate limiter failing, backing off claims", "backoff", delay.String())
+			}
+		}
+		e.release(ctx, log, row, reason, delay)
 		return
 	}
+	lb.ok()
 	e.obs.RateLimitWait(ch, waited)
 
 	tk, admitted := brk.admit()
 	if !admitted {
-		e.release(ctx, log, row, releaseBreakerOpen)
+		e.release(ctx, log, row, releaseBreakerOpen, 0)
 		return
 	}
 	defer tk.abort() // a no-op once the send is recorded; frees a probe slot on every other exit
@@ -280,17 +305,19 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, row store
 
 // release returns an unstarted row to pending. It runs on a context detached
 // from ctx's cancellation (shutdown must not kill it) with a short timeout.
-func (e *Engine) release(ctx context.Context, log *slog.Logger, row store.QueueRow, reason string) {
+// A positive delay also defers the row's next_attempt_at by that much (database
+// clock), so the claim does not hand the same row straight back.
+func (e *Engine) release(ctx context.Context, log *slog.Logger, row store.QueueRow, reason string, delay time.Duration) {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
 	defer cancel()
-	err := e.q.Release(rctx, row.ID, row.LeaseToken)
+	err := e.q.Release(rctx, row.ID, row.LeaseToken, delay)
 	switch {
 	case errors.Is(err, store.ErrLeaseLost):
 		log.Debug("lease lost before release, dropping row", "reason", reason)
 	case err != nil:
 		log.Error("release failed", append(observability.ErrAttrs(err), "reason", reason)...)
 	case reason == releaseLimiterError:
-		log.Warn("row released", "reason", reason)
+		log.Debug("row released", "reason", reason)
 	default:
 		log.Info("row released", "reason", reason)
 	}

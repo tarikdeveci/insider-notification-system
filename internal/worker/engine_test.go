@@ -245,8 +245,8 @@ func (f *fakeQueue) Claim(context.Context, domain.Channel, int, string) ([]store
 func (f *fakeQueue) StartAttempt(context.Context, string, string) (int, time.Time, error) {
 	return 1, time.Now(), nil
 }
-func (f *fakeQueue) FinishAttempt(context.Context, store.FinishParams) error { return nil }
-func (f *fakeQueue) Release(context.Context, string, string) error           { return nil }
+func (f *fakeQueue) FinishAttempt(context.Context, store.FinishParams) error      { return nil }
+func (f *fakeQueue) Release(context.Context, string, string, time.Duration) error { return nil }
 func (f *fakeQueue) Reap(context.Context, time.Duration) ([]store.ReapedRow, error) {
 	return nil, nil
 }

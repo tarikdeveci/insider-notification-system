@@ -43,7 +43,7 @@ func (q *partialQueue) FinishAttempt(context.Context, store.FinishParams) error 
 	q.finished.Add(1)
 	return nil
 }
-func (q *partialQueue) Release(context.Context, string, string) error { return nil }
+func (q *partialQueue) Release(context.Context, string, string, time.Duration) error { return nil }
 func (q *partialQueue) Reap(context.Context, time.Duration) ([]store.ReapedRow, error) {
 	return nil, nil
 }

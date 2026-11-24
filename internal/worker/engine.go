@@ -25,7 +25,7 @@ type Queue interface {
 	Claim(ctx context.Context, ch domain.Channel, n int, token string) ([]store.QueueRow, error)
 	StartAttempt(ctx context.Context, id, token string) (attempt int, startedAt time.Time, err error)
 	FinishAttempt(ctx context.Context, p store.FinishParams) error
-	Release(ctx context.Context, id, token string) error
+	Release(ctx context.Context, id, token string, delay time.Duration) error
 	Reap(ctx context.Context, maxAge time.Duration) ([]store.ReapedRow, error)
 }
 
