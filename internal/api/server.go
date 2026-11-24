@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/tarikdeveci/insider-notification-system/internal/observability"
 	"github.com/tarikdeveci/insider-notification-system/internal/store"
@@ -34,6 +35,8 @@ type Deps struct {
 	Metrics *observability.APIMetrics
 	// Now is the clock used for schedule checks; nil means time.Now.
 	Now func() time.Time
+	// TracerProvider creates the request spans; nil means the global provider.
+	TracerProvider trace.TracerProvider
 }
 
 type route struct {
@@ -85,17 +88,18 @@ func NewServer(d Deps) http.Handler {
 	for _, rt := range s.routes() {
 		mux.HandleFunc(rt.pattern, rt.handler)
 	}
-	return wrapWith(d.Logger, d.Metrics, problemMux{mux})
+	return wrapWith(d.Logger, d.Metrics, d.TracerProvider, problemMux{mux})
 }
 
 // wrap applies the middleware chain. Recover sits inside AccessLog so a
 // recovered panic still produces exactly one access record, with status 500.
-func wrap(log *slog.Logger, h http.Handler) http.Handler { return wrapWith(log, nil, h) }
+func wrap(log *slog.Logger, h http.Handler) http.Handler { return wrapWith(log, nil, nil, h) }
 
-// wrapWith is wrap plus request metrics, which sit between AccessLog and
-// Recover so a recovered panic is still counted, with status 500.
-func wrapWith(log *slog.Logger, m *observability.APIMetrics, h http.Handler) http.Handler {
-	return RequestID(AccessLog(log)(Instrument(m)(Recover(log)(h))))
+// wrapWith is wrap plus request tracing and metrics. Trace sits outside
+// AccessLog so log records carry the trace context; metrics sit between
+// AccessLog and Recover so a recovered panic is still counted, with status 500.
+func wrapWith(log *slog.Logger, m *observability.APIMetrics, tp trace.TracerProvider, h http.Handler) http.Handler {
+	return RequestID(Trace(tp)(AccessLog(log)(Instrument(m)(Recover(log)(h)))))
 }
 
 // problemMux renders the mux's own 404 and 405 answers as problem+json,
@@ -105,6 +109,7 @@ type problemMux struct{ mux *http.ServeMux }
 
 func (p problemMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h, pattern := p.mux.Handler(r)
+	nameSpan(r, pattern)
 	if pattern != "" {
 		// Dispatch through the mux itself so it populates PathValue.
 		p.mux.ServeHTTP(w, r)
