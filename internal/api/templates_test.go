@@ -294,3 +294,38 @@ func TestTemplateRequestBoundsAreFieldErrors(t *testing.T) {
 		t.Fatalf("non-string var: %d", rr.Code)
 	}
 }
+
+func TestTemplateVarsWithoutTemplateIDIs422(t *testing.T) {
+	h := newAPI(t)
+	for _, vars := range []string{`{}`, `{"a":"b"}`} {
+		item := fmt.Sprintf(`{"recipient":"+905551234567","channel":"sms","content":"hello","template_vars":%s}`, vars)
+		rr := call(t, h, "POST", "/v1/notifications", item, nil)
+		if rr.Code != 422 || !hasError(errFields(t, rr), "template_vars: requires template_id") {
+			t.Fatalf("single vars=%s: %d %s", vars, rr.Code, rr.Body)
+		}
+		batch := fmt.Sprintf(`{"notifications":[%s,%s]}`, smsBody, item)
+		rr = call(t, h, "POST", "/v1/notifications/batch", batch, nil)
+		if rr.Code != 422 || !hasError(errFields(t, rr), "[1] template_vars: requires template_id") {
+			t.Fatalf("batch vars=%s: %d %s", vars, rr.Code, rr.Body)
+		}
+	}
+	// JSON null is the same as absent.
+	null := `{"recipient":"+905551234567","channel":"sms","content":"hello","template_vars":null}`
+	if rr := call(t, h, "POST", "/v1/notifications", null, nil); rr.Code != 201 {
+		t.Fatalf("null vars: %d %s", rr.Code, rr.Body)
+	}
+}
+
+func TestBatchTemplateChannelMismatchIs422(t *testing.T) {
+	h := newAPI(t)
+	id := mkTemplate(t, h, "mail", "email", "Hi")["id"].(string)
+	batch := fmt.Sprintf(`{"notifications":[%s,%s]}`, smsBody, tplNotification(id, `{}`))
+	rr := call(t, h, "POST", "/v1/notifications/batch", batch, nil)
+	if rr.Code != 422 || !hasError(errFields(t, rr), "[1] template_id: template channel is email") {
+		t.Fatalf("batch mismatch: %d %s", rr.Code, rr.Body)
+	}
+	list := obj(t, call(t, h, "GET", "/v1/notifications", "", nil))["items"].([]any)
+	if len(list) != 0 {
+		t.Fatalf("a rejected batch must insert nothing, have %d rows", len(list))
+	}
+}

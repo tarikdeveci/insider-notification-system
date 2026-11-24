@@ -64,6 +64,7 @@ func TestContentAndTemplateIDMutuallyExclusive(t *testing.T) {
 		{"both", domain.CreateRequest{Recipient: "+905551234567", Channel: "sms", Content: "hi", TemplateID: &id}, "template_id"},
 		{"neither", domain.CreateRequest{Recipient: "+905551234567", Channel: "sms"}, "content"},
 		{"vars without id", domain.CreateRequest{Recipient: "+905551234567", Channel: "sms", Content: "hi", TemplateVars: map[string]string{"a": "b"}}, "template_vars"},
+		{"empty vars without id", domain.CreateRequest{Recipient: "+905551234567", Channel: "sms", Content: "hi", TemplateVars: map[string]string{}}, "template_vars"},
 		{"template only", tplReq(map[string]string{"a": "b"}), ""},
 		{"malformed id", domain.CreateRequest{Recipient: "+905551234567", Channel: "sms", TemplateID: &bad}, "template_id"},
 	}

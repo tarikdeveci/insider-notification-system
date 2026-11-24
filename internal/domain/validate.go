@@ -103,7 +103,7 @@ func (r CreateRequest) Validate() (NewNotification, []FieldError) {
 			add("template_id", "must be a UUID")
 		}
 		tplVars = r.validateVars(add)
-	} else if len(r.TemplateVars) > 0 {
+	} else if r.TemplateVars != nil {
 		add("template_vars", "requires template_id")
 	}
 
