@@ -88,7 +88,7 @@ func toAttemptDTOs(as []domain.Attempt) []attemptDTO {
 // internalError logs an unexpected failure (type and SQLSTATE only, never the
 // error text, which can carry row data) and answers with a bare 500 problem.
 func internalError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err error) {
-	args := append([]any{"correlation_id", observability.CorrelationID(r.Context())}, observability.ErrAttrs(err)...)
-	log.ErrorContext(r.Context(), "internal error", args...)
+	// The logger adds correlation_id from the context, so it is not passed here.
+	log.ErrorContext(r.Context(), "internal error", observability.ErrAttrs(err)...)
 	writeProblem(w, r, http.StatusInternalServerError, "", nil)
 }
