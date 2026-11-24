@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/tarikdeveci/insider-notification-system/internal/config"
 	"github.com/tarikdeveci/insider-notification-system/internal/domain"
 	"github.com/tarikdeveci/insider-notification-system/internal/store"
 )
@@ -65,6 +66,15 @@ func state(t *testing.T, pool *pgxpool.Pool, id string) rowState {
 	return r
 }
 
+func dbNow(t *testing.T, pool *pgxpool.Pool) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := pool.QueryRow(context.Background(), `SELECT now()`).Scan(&now); err != nil {
+		t.Fatal(err)
+	}
+	return now
+}
+
 func attemptCount(t *testing.T, pool *pgxpool.Pool, id string) int {
 	t.Helper()
 	var n int
@@ -72,6 +82,50 @@ func attemptCount(t *testing.T, pool *pgxpool.Pool, id string) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// config validates RATELIMIT_MAX_WAIT against config.LeaseDuration; the SQL
+// literal must stay equal to it.
+func TestClaimLeaseMatchesConfigLeaseDuration(t *testing.T) {
+	s, pool := newStore(t)
+	row, _ := claimOne(t, s, pool)
+	var secs float64
+	err := pool.QueryRow(context.Background(),
+		`SELECT extract(epoch FROM (locked_until - now())) FROM notifications WHERE id = $1::uuid`, row.ID).Scan(&secs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := time.Duration(secs * float64(time.Second)); got < config.LeaseDuration-2*time.Second || got > config.LeaseDuration {
+		t.Fatalf("claim lease is %s, config.LeaseDuration is %s", got, config.LeaseDuration)
+	}
+}
+
+// A later priority probe that fails must not drop rows an earlier probe already
+// moved to processing: Claim returns them together with the error.
+func TestClaimReturnsRowsOfEarlierProbeWithError(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	high, err := s.CreateNotification(ctx, store.CreateParams{
+		New:           domain.NewNotification{Channel: domain.ChannelSMS, Recipient: recipientFor(domain.ChannelSMS), Content: "h", Priority: domain.PriorityHigh},
+		CorrelationID: "t",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustCreate(t, s, domain.ChannelSMS, "normal") // priority 1: its probe is made to fail
+	exec(t, pool, `CREATE FUNCTION fail_normal() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'probe failure'; END $$ LANGUAGE plpgsql`)
+	exec(t, pool, `CREATE TRIGGER fail_normal BEFORE UPDATE ON notifications FOR EACH ROW WHEN (NEW.priority = 1 AND NEW.status = 'processing') EXECUTE FUNCTION fail_normal()`)
+
+	rows, err := s.Claim(ctx, domain.ChannelSMS, 5, newToken(t, pool))
+	if err == nil {
+		t.Fatal("want the failed probe's error")
+	}
+	if len(rows) != 1 || rows[0].ID != high.Notification.ID {
+		t.Fatalf("want the high priority row returned with the error, got %d rows", len(rows))
+	}
+	if st := state(t, pool, high.Notification.ID); st.status != "processing" {
+		t.Fatalf("high priority row status = %s, want processing", st.status)
+	}
 }
 
 func TestClaimNeverReturnsRowTwice(t *testing.T) {
@@ -278,8 +332,8 @@ func TestStaleWorkerCannotWriteResult(t *testing.T) {
 	if !errors.Is(err, store.ErrLeaseLost) {
 		t.Fatalf("stale finish: %v", err)
 	}
-	if n := attemptCount(t, pool, row.ID); n != 0 {
-		t.Fatalf("stale worker wrote %d attempt rows", n)
+	if n := attemptCount(t, pool, row.ID); n != 1 { // the reaper's lease_expired row, nothing from the stale worker
+		t.Fatalf("attempt rows = %d, want only the reaper's lease_expired row", n)
 	}
 	if st := state(t, pool, row.ID); st.status != "processing" || st.lease == nil || *st.lease != newTok {
 		t.Fatalf("row disturbed: %+v", st)
@@ -333,15 +387,20 @@ func TestResultTransactionWritesAttemptRow(t *testing.T) {
 	t.Run("retry", func(t *testing.T) {
 		row, tok := claimOne(t, s, pool)
 		attempt, started, _ := s.StartAttempt(ctx, row.ID, tok)
-		next := time.Now().Add(time.Hour).Truncate(time.Microsecond)
+		before := dbNow(t, pool)
 		err := s.FinishAttempt(ctx, store.FinishParams{ID: row.ID, Token: tok, Action: store.FinishRetry, AttemptNo: attempt, StartedAt: started,
-			HTTPStatus: 503, AttemptError: "provider 5xx", NextAttemptAt: next, LastError: "provider 5xx"})
+			HTTPStatus: 503, AttemptError: "provider 5xx", RetryDelay: time.Hour, LastError: "provider 5xx"})
 		if err != nil {
 			t.Fatal(err)
 		}
+		after := dbNow(t, pool)
 		st := state(t, pool, row.ID)
-		if st.status != "pending" || st.attempts != 1 || !st.next.Equal(next) || st.lastErr == nil || *st.lastErr != "provider 5xx" || st.lease != nil || st.locked != nil {
+		if st.status != "pending" || st.attempts != 1 || st.lastErr == nil || *st.lastErr != "provider 5xx" || st.lease != nil || st.locked != nil {
 			t.Fatalf("state: %+v", st)
+		}
+		// The retry is scheduled on the database clock, not the worker's.
+		if st.next.Before(before.Add(time.Hour)) || st.next.After(after.Add(time.Hour)) {
+			t.Fatalf("next_attempt_at %v not within db now + 1h [%v, %v]", st.next, before.Add(time.Hour), after.Add(time.Hour))
 		}
 		var e *string
 		if err := pool.QueryRow(ctx, `SELECT error FROM notification_attempts WHERE notification_id = $1::uuid`, row.ID).Scan(&e); err != nil || e == nil || *e != "provider 5xx" {
@@ -400,7 +459,7 @@ func TestThrottledResultGivesAttemptBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = s.FinishAttempt(ctx, store.FinishParams{ID: row.ID, Token: tok, Action: store.FinishRetry, AttemptNo: attempt, StartedAt: started,
-		HTTPStatus: 429, AttemptError: "throttled", NextAttemptAt: time.Now().Add(time.Second), GiveBackAttempt: true, LastError: "throttled"})
+		HTTPStatus: 429, AttemptError: "throttled", RetryDelay: time.Second, GiveBackAttempt: true, LastError: "throttled"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,21 +472,111 @@ func TestThrottledResultGivesAttemptBack(t *testing.T) {
 	}
 }
 
+// A release with a delay pushes next_attempt_at into the future by the database
+// clock, so the same rows do not come straight back from the claim.
+func TestReleaseWithDelayDefersNextAttempt(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	row, tok := claimOne(t, s, pool)
+	if err := s.Release(ctx, row.ID, tok, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	var secs float64
+	if err := pool.QueryRow(ctx, `SELECT extract(epoch FROM (next_attempt_at - now())) FROM notifications WHERE id = $1::uuid`, row.ID).Scan(&secs); err != nil {
+		t.Fatal(err)
+	}
+	if secs < 3500 || secs > 3601 {
+		t.Fatalf("next_attempt_at is %.0fs ahead, want about 3600", secs)
+	}
+	if rows, err := s.Claim(ctx, domain.ChannelSMS, 1, newToken(t, pool)); err != nil || len(rows) != 0 {
+		t.Fatalf("a delayed row must not be claimable: %v %d", err, len(rows))
+	}
+}
+
+type historyRow struct {
+	seq, attemptNo int
+	errText        string
+}
+
+func history(t *testing.T, pool *pgxpool.Pool, id string) []historyRow {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`SELECT seq, attempt_no, COALESCE(error, '') FROM notification_attempts WHERE notification_id = $1::uuid ORDER BY seq`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []historyRow
+	for rows.Next() {
+		var h historyRow
+		if err := rows.Scan(&h.seq, &h.attemptNo, &h.errText); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+// attempt_no is the notifications.attempts counter at that attempt, so a 429
+// (which refunds the attempt) leaves rows that share it. seq is the unambiguous
+// per notification order, and the reaper records a lost lease as its own row.
+func TestAttemptHistoryHasUnambiguousSequence(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	row, tok := claimOne(t, s, pool)
+	for i := 0; i < 2; i++ { // two throttled attempts share attempt_no 1
+		attempt, started, err := s.StartAttempt(ctx, row.ID, tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = s.FinishAttempt(ctx, store.FinishParams{ID: row.ID, Token: tok, Action: store.FinishRetry, AttemptNo: attempt, StartedAt: started,
+			HTTPStatus: 429, AttemptError: "throttled", RetryDelay: 0, GiveBackAttempt: true, LastError: "throttled"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tok = newToken(t, pool)
+		if rows, err := s.Claim(ctx, domain.ChannelSMS, 1, tok); err != nil || len(rows) != 1 {
+			t.Fatalf("reclaim: %v %d", err, len(rows))
+		}
+	}
+	if _, _, err := s.StartAttempt(ctx, row.ID, tok); err != nil { // attempt 1 again, then its lease expires
+		t.Fatal(err)
+	}
+	expireLease(t, pool, row.ID)
+	if _, err := s.Reap(ctx, 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	got := history(t, pool, row.ID)
+	want := []historyRow{{1, 1, "throttled"}, {2, 1, "throttled"}, {3, 1, "lease_expired"}}
+	if len(got) != len(want) {
+		t.Fatalf("history = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("history = %+v, want %+v", got, want)
+		}
+	}
+	attempts, err := s.ListAttempts(ctx, row.ID)
+	if err != nil || len(attempts) != 3 || attempts[2].Error == nil || *attempts[2].Error != "lease_expired" {
+		t.Fatalf("ListAttempts: %v %+v", err, attempts)
+	}
+}
+
 func TestReleaseDoesNotUseAttempt(t *testing.T) {
 	s, pool := newStore(t)
 	ctx := context.Background()
 	row, tok := claimOne(t, s, pool)
-	if err := s.Release(ctx, row.ID, newToken(t, pool)); !errors.Is(err, store.ErrLeaseLost) {
+	if err := s.Release(ctx, row.ID, newToken(t, pool), 0); !errors.Is(err, store.ErrLeaseLost) {
 		t.Fatalf("stale release: %v", err)
 	}
-	if err := s.Release(ctx, row.ID, tok); err != nil {
+	if err := s.Release(ctx, row.ID, tok, 0); err != nil {
 		t.Fatal(err)
 	}
 	st := state(t, pool, row.ID)
 	if st.status != "pending" || st.attempts != 0 || st.lease != nil || st.locked != nil || !st.next.Equal(row.NextAttemptAt) {
 		t.Fatalf("state: %+v", st)
 	}
-	if err := s.Release(ctx, row.ID, tok); !errors.Is(err, store.ErrLeaseLost) {
+	if err := s.Release(ctx, row.ID, tok, 0); !errors.Is(err, store.ErrLeaseLost) {
 		t.Fatalf("second release: %v", err)
 	}
 	if n := attemptCount(t, pool, row.ID); n != 0 {
@@ -457,8 +606,11 @@ func TestReaperRequeuesExpiredLeases(t *testing.T) {
 	if st.status != "pending" || st.attempts != 1 || st.lease != nil || st.locked != nil || st.lastErr != nil {
 		t.Fatalf("state: %+v", st)
 	}
-	if n := attemptCount(t, pool, expired.ID); n != 0 {
-		t.Fatalf("reaper wrote attempt rows: %d", n)
+	if n := attemptCount(t, pool, expired.ID); n != 1 {
+		t.Fatalf("reaper must write one lease_expired attempt row, got %d", n)
+	}
+	if n := attemptCount(t, pool, live.ID); n != 0 {
+		t.Fatalf("a live lease got %d attempt rows", n)
 	}
 	if st := state(t, pool, live.ID); st.status != "processing" {
 		t.Fatalf("live lease reaped: %s", st.status)
@@ -625,5 +777,65 @@ func TestMaxDeliveryAgeUsesScheduledAt(t *testing.T) {
 	}
 	if st := state(t, pool, id); st.status != "pending" {
 		t.Fatalf("status %s", st.status)
+	}
+}
+
+// A pending row past the max delivery age must not be sent: the claim fails it
+// as expired in the same statement and hands it back marked, without a lease.
+// The age runs from scheduled_at when set, so a row scheduled for later is not
+// expired by its old created_at. Claim (no age) never expires a row.
+func TestClaimWithAgeFailsExpiredPendingRows(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	old := mustCreate(t, s, domain.ChannelSMS, "old")
+	fresh := mustCreate(t, s, domain.ChannelSMS, "fresh")
+	sched := mustCreate(t, s, domain.ChannelSMS, "scheduled")
+	if _, err := pool.Exec(ctx, `UPDATE notifications SET created_at = now() - interval '25 hours' WHERE id = ANY($1::uuid[])`,
+		[]string{old.ID, sched.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE notifications SET scheduled_at = now() - interval '1 hour' WHERE id = $1::uuid`, sched.ID); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := s.Claim(ctx, domain.ChannelEmail, 10, newToken(t, pool)); err != nil || len(rows) != 0 {
+		t.Fatalf("other channel claim: %v %d", err, len(rows))
+	}
+
+	rows, err := s.ClaimWithAge(ctx, domain.ChannelSMS, 10, newToken(t, pool), 24*time.Hour)
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("claim: %v %d", err, len(rows))
+	}
+	byID := map[string]store.QueueRow{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	if r := byID[old.ID]; !r.Expired || r.LeaseToken != "" {
+		t.Fatalf("old row: expired=%v lease=%q, want expired with no lease", r.Expired, r.LeaseToken)
+	}
+	for _, id := range []string{fresh.ID, sched.ID} {
+		if r := byID[id]; r.Expired || r.LeaseToken == "" {
+			t.Fatalf("row %s: expired=%v lease=%q, want a live claim", id, r.Expired, r.LeaseToken)
+		}
+		if st := state(t, pool, id); st.status != "processing" {
+			t.Fatalf("row %s status %s, want processing", id, st.status)
+		}
+	}
+	st := state(t, pool, old.ID)
+	if st.status != "failed" || st.lease != nil || st.locked != nil || st.attempts != 0 ||
+		st.lastErr == nil || *st.lastErr != "expired: max delivery age reached" {
+		t.Fatalf("old row state: %+v", st)
+	}
+}
+
+func TestClaimWithoutAgeNeverExpires(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	old := mustCreate(t, s, domain.ChannelSMS, "old")
+	if _, err := pool.Exec(ctx, `UPDATE notifications SET created_at = now() - interval '400 days' WHERE id = $1::uuid`, old.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Claim(ctx, domain.ChannelSMS, 1, newToken(t, pool))
+	if err != nil || len(rows) != 1 || rows[0].Expired {
+		t.Fatalf("claim: %v %+v", err, rows)
 	}
 }

@@ -69,7 +69,7 @@ func TestClaimUsesIndexOnFutureBacklog(t *testing.T) {
 	defer func() { _ = tx.Rollback(ctx) }()
 	var raw []byte
 	if err := tx.QueryRow(ctx, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+store.ClaimSQL,
-		"sms", int16(1), 20, token).Scan(&raw); err != nil {
+		"sms", int16(1), 20, token, (24 * time.Hour).Seconds(), "expired: max delivery age reached").Scan(&raw); err != nil {
 		t.Fatalf("explain: %v", err)
 	}
 	var doc []struct {

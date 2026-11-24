@@ -77,11 +77,12 @@ const (
 	ActionFail
 )
 
-// Outcome is the decision. NextAttemptAt is set for ActionRetry, Reason for
-// ActionFail, and GiveBackAttempt asks the store to refund the attempt.
+// Outcome is the decision. Delay is set for ActionRetry and the store adds it
+// to the database clock, Reason is set for ActionFail, and GiveBackAttempt asks
+// the store to refund the attempt.
 type Outcome struct {
 	Action          Action
-	NextAttemptAt   time.Time
+	Delay           time.Duration
 	GiveBackAttempt bool
 	Reason          string
 }
@@ -107,10 +108,10 @@ func (p Policy) Decide(in Input, rnd func() float64) Outcome {
 		if delay <= 0 {
 			delay = p.Backoff(in.Attempts, rnd)
 		}
-		return Outcome{Action: ActionRetry, NextAttemptAt: in.Now.Add(delay), GiveBackAttempt: true}
+		return Outcome{Action: ActionRetry, Delay: delay, GiveBackAttempt: true}
 	}
 	if in.Attempts >= in.MaxAttempts {
 		return Outcome{Action: ActionFail, Reason: ReasonExhausted}
 	}
-	return Outcome{Action: ActionRetry, NextAttemptAt: in.Now.Add(p.Backoff(in.Attempts, rnd))}
+	return Outcome{Action: ActionRetry, Delay: p.Backoff(in.Attempts, rnd)}
 }

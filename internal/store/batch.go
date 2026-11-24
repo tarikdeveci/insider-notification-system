@@ -182,30 +182,34 @@ func (s *Store) GetBatch(ctx context.Context, id string) (BatchSummary, error) {
 		domain.StatusPending: 0, domain.StatusProcessing: 0, domain.StatusSent: 0,
 		domain.StatusFailed: 0, domain.StatusCancelled: 0,
 	}}
-	err := s.pool.QueryRow(ctx,
-		`SELECT total, created_at FROM batches WHERE id = $1::uuid`, id).Scan(&sum.Total, &sum.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return BatchSummary{}, ErrNotFound
-	}
+	// One statement, so total and counts share a snapshot. A batch without
+	// notifications yields one row with a NULL status.
+	rows, err := s.pool.Query(ctx,
+		`SELECT b.total, b.created_at, n.status, count(n.id)
+		 FROM batches b LEFT JOIN notifications n ON n.batch_id = b.id
+		 WHERE b.id = $1::uuid
+		 GROUP BY b.total, b.created_at, n.status`, id)
 	if err != nil {
 		return BatchSummary{}, fmt.Errorf("get batch: %w", err)
 	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT status, count(*) FROM notifications WHERE batch_id = $1::uuid GROUP BY status`, id)
-	if err != nil {
-		return BatchSummary{}, fmt.Errorf("count batch statuses: %w", err)
-	}
 	defer rows.Close()
+	found := false
 	for rows.Next() {
-		var st string
+		var st *string
 		var c int
-		if err := rows.Scan(&st, &c); err != nil {
-			return BatchSummary{}, fmt.Errorf("scan batch count: %w", err)
+		if err := rows.Scan(&sum.Total, &sum.CreatedAt, &st, &c); err != nil {
+			return BatchSummary{}, fmt.Errorf("scan batch: %w", err)
 		}
-		sum.Counts[domain.Status(st)] = c
+		found = true
+		if st != nil {
+			sum.Counts[domain.Status(*st)] = c
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return BatchSummary{}, fmt.Errorf("count batch statuses: %w", err)
+		return BatchSummary{}, fmt.Errorf("get batch: %w", err)
+	}
+	if !found {
+		return BatchSummary{}, ErrNotFound
 	}
 	return sum, nil
 }

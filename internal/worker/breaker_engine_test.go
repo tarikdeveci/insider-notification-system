@@ -41,7 +41,7 @@ type brkQueue struct {
 	startFn  func(ctx context.Context) error // scripted StartAttempt failure; nil means succeed
 }
 
-func (q *brkQueue) Claim(_ context.Context, _ domain.Channel, n int, _ string) ([]store.QueueRow, error) {
+func (q *brkQueue) ClaimWithAge(_ context.Context, _ domain.Channel, n int, _ string, _ time.Duration) ([]store.QueueRow, error) {
 	q.mu.Lock()
 	q.claims = append(q.claims, n)
 	q.mu.Unlock()
@@ -76,7 +76,7 @@ func (q *brkQueue) failNextStart(fn func(ctx context.Context) error) *atomic.Boo
 	return used
 }
 func (q *brkQueue) FinishAttempt(context.Context, store.FinishParams) error { return nil }
-func (q *brkQueue) Release(_ context.Context, id, _ string) error {
+func (q *brkQueue) Release(_ context.Context, id, _ string, _ time.Duration) error {
 	q.mu.Lock()
 	q.released = append(q.released, id)
 	q.mu.Unlock()

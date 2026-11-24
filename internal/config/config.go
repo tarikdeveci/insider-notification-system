@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+const (
+	// LeaseDuration is the claim lease the store writes (queue.go, "30 seconds");
+	// a store test keeps the two equal.
+	LeaseDuration = 30 * time.Second
+	// ProviderSendTimeout mirrors the provider client's default request timeout.
+	ProviderSendTimeout = 5 * time.Second
+	// LeaseSafetyMargin is the slack kept between permit wait plus send and the lease.
+	LeaseSafetyMargin = 10 * time.Second
+)
+
 // Config holds the runtime settings shared by the api and worker processes.
 type Config struct {
 	HTTPAddr      string // HTTP_ADDR, default ":8080"
@@ -82,6 +92,10 @@ func Load(getenv func(string) string) (Config, error) {
 		if *d.dst, err = positiveDuration(getenv, d.name, d.def); err != nil {
 			return Config{}, err
 		}
+	}
+	if c.RateLimitMaxWait+ProviderSendTimeout+LeaseSafetyMargin > LeaseDuration {
+		return Config{}, fmt.Errorf("config: RATELIMIT_MAX_WAIT must be at most %s so that the wait, the %s provider timeout and a %s margin fit inside the %s claim lease",
+			LeaseDuration-ProviderSendTimeout-LeaseSafetyMargin, ProviderSendTimeout, LeaseSafetyMargin, LeaseDuration)
 	}
 	return c, nil
 }
