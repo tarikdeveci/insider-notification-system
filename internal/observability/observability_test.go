@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/puddle/v2"
 
 	"github.com/tarikdeveci/insider-notification-system/internal/observability"
 )
@@ -146,6 +148,47 @@ func TestErrAttrsPgError(t *testing.T) {
 	observability.NewLogger(&buf, "info").Error("db", observability.ErrAttrs(err)...)
 	if strings.Contains(buf.String(), "+9055") || strings.Contains(buf.String(), "Failing row") {
 		t.Fatalf("pg detail leaked: %s", buf.String())
+	}
+}
+
+type customErr struct{ msg string }
+
+func (e *customErr) Error() string { return e.msg }
+
+func TestErrAttrsClassifiesCauses(t *testing.T) {
+	const secret = "SENSITIVE-row-data"
+	wrap := func(err error) error { return fmt.Errorf("claim %s: %w", secret, err) }
+	cases := []struct {
+		name      string
+		err       error
+		class     string
+		wantExtra map[string]any
+	}{
+		{"canceled", wrap(context.Canceled), "context_canceled", nil},
+		{"deadline", wrap(context.DeadlineExceeded), "deadline_exceeded", nil},
+		{"net op", wrap(&net.OpError{Op: "dial", Net: "tcp", Err: errors.New(secret)}), "net_op_error", map[string]any{"net_op": "dial"}},
+		{"connect", wrap(&pgconn.ConnectError{}), "pg_connect_error", nil},
+		{"pool exhausted", wrap(puddle.ErrNotAvailable), "pool_exhausted", nil},
+		{"pool closed", wrap(puddle.ErrClosedPool), "pool_closed", nil},
+		{"sqlstate", wrap(&pgconn.PgError{Code: "40001", Message: secret}), "pg_error", map[string]any{"code": "40001"}},
+		{"innermost type", wrap(fmt.Errorf("mid: %w", &customErr{secret})), "*observability_test.customErr", nil},
+	}
+	for _, c := range cases {
+		attrs := observability.ErrAttrs(c.err)
+		m := attrMap(attrs)
+		if m["err_class"] != c.class {
+			t.Errorf("%s: err_class = %v, want %s", c.name, m["err_class"], c.class)
+		}
+		for k, v := range c.wantExtra {
+			if m[k] != v {
+				t.Errorf("%s: %s = %v, want %v", c.name, k, m[k], v)
+			}
+		}
+		var buf bytes.Buffer
+		observability.NewLogger(&buf, "info").Error("x", attrs...)
+		if strings.Contains(buf.String(), secret) {
+			t.Errorf("%s: error text leaked: %s", c.name, buf.String())
+		}
 	}
 }
 
