@@ -2,6 +2,7 @@ package worker_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -37,6 +38,7 @@ type brkQueue struct {
 	starts   int
 	released []string
 	next     int
+	startFn  func(ctx context.Context) error // scripted StartAttempt failure; nil means succeed
 }
 
 func (q *brkQueue) Claim(_ context.Context, _ domain.Channel, n int, _ string) ([]store.QueueRow, error) {
@@ -45,11 +47,33 @@ func (q *brkQueue) Claim(_ context.Context, _ domain.Channel, n int, _ string) (
 	q.mu.Unlock()
 	return q.onClaim(n), nil
 }
-func (q *brkQueue) StartAttempt(context.Context, string, string) (int, time.Time, error) {
+func (q *brkQueue) StartAttempt(ctx context.Context, _, _ string) (int, time.Time, error) {
+	q.mu.Lock()
+	q.starts++
+	fn := q.startFn
+	q.mu.Unlock()
+	if fn != nil {
+		if err := fn(ctx); err != nil {
+			return 0, time.Time{}, err
+		}
+	}
+	return 1, time.Now(), nil
+}
+
+// failNextStart scripts the next StartAttempt only: fn runs once, then the
+// queue goes back to succeeding. It returns a flag set when fn has run.
+func (q *brkQueue) failNextStart(fn func(ctx context.Context) error) *atomic.Bool {
+	used := &atomic.Bool{}
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.starts++
-	return 1, time.Now(), nil
+	q.startFn = func(ctx context.Context) error {
+		q.mu.Lock()
+		q.startFn = nil
+		q.mu.Unlock()
+		used.Store(true)
+		return fn(ctx)
+	}
+	return used
 }
 func (q *brkQueue) FinishAttempt(context.Context, store.FinishParams) error { return nil }
 func (q *brkQueue) Release(_ context.Context, id, _ string) error {
@@ -190,7 +214,10 @@ func TestEngineBreakerObserverSeesOpenHalfOpenClosed(t *testing.T) {
 	}
 }
 
-func TestProbeEndedWithoutSendFreesSlotAtEngineLevel(t *testing.T) {
+// TestLimiterReleaseBeforeAdmitDoesNotBlockProbe covers the limiter path only:
+// the limiter fails before admit, so no probe ticket exists on that path. The
+// abort paths after admit are covered by TestProbeAbortedAt* below.
+func TestLimiterReleaseBeforeAdmitDoesNotBlockProbe(t *testing.T) {
 	clk := newAtomicClock()
 	q := &brkQueue{}
 	q.onClaim = q.rows
@@ -221,4 +248,79 @@ func TestProbeEndedWithoutSendFreesSlotAtEngineLevel(t *testing.T) {
 	waitFor(t, "a later probe closes the breaker", func() bool {
 		return slices.Equal(obs.stateList(), []string{"sms:1", "sms:2", "sms:0"})
 	})
+}
+
+// probeHarness runs an sms engine whose breaker (threshold 1) opens on the first
+// retryable send; once healthy is set every send succeeds.
+type probeHarness struct {
+	clk     *atomicClock
+	q       *brkQueue
+	obs     *recObserver
+	healthy *atomic.Bool
+	run     *running
+}
+
+func newProbeHarness(t *testing.T) *probeHarness {
+	t.Helper()
+	h := &probeHarness{clk: newAtomicClock(), q: &brkQueue{}, obs: &recObserver{}, healthy: &atomic.Bool{}}
+	h.q.onClaim = h.q.rows
+	sender := funcSender(func(ctx context.Context, m provider.Message) provider.Result {
+		if h.healthy.Load() {
+			return provider.Result{Class: provider.Success, MessageID: "m", HTTPStatus: 202}
+		}
+		return retryableSender(ctx, m)
+	})
+	h.run = start(t, worker.New(h.q, sender, okLimiter, breakerSettings(1),
+		worker.WithRand(zeroRand), worker.WithClock(h.clk.now), worker.WithObserver(h.obs), worker.WithChannels(domain.ChannelSMS)))
+	waitFor(t, "open", func() bool { return slices.Contains(h.obs.stateList(), "sms:1") })
+	time.Sleep(100 * time.Millisecond) // let rows claimed before the opening settle
+	return h
+}
+
+// halfOpenWith scripts the next StartAttempt, then lets the open period end so the
+// next admitted row is the probe. It returns once that probe's StartAttempt ran.
+func (h *probeHarness) halfOpenWith(t *testing.T, fn func(ctx context.Context) error) {
+	t.Helper()
+	used := h.q.failNextStart(fn)
+	h.healthy.Store(true)
+	h.clk.advance(30 * time.Second)
+	waitFor(t, "probe StartAttempt ran", used.Load)
+}
+
+// wantProbeRecovers proves the aborted probe freed its slot: a later row is
+// admitted as the next probe and its success closes the breaker, with no
+// reopening in between.
+func (h *probeHarness) wantProbeRecovers(t *testing.T) {
+	t.Helper()
+	want := []string{"sms:1", "sms:2", "sms:0"}
+	waitFor(t, "next probe closes the breaker", func() bool { return slices.Equal(h.obs.stateList(), want) })
+}
+
+func TestProbeAbortedAtLeaseLostFreesSlot(t *testing.T) {
+	h := newProbeHarness(t)
+	h.halfOpenWith(t, func(context.Context) error { return store.ErrLeaseLost })
+	h.wantProbeRecovers(t)
+}
+
+func TestProbeAbortedAtStartAttemptErrorFreesSlot(t *testing.T) {
+	h := newProbeHarness(t)
+	h.halfOpenWith(t, func(context.Context) error { return errors.New("db unavailable") })
+	h.wantProbeRecovers(t)
+}
+
+// At shutdown the engine ends, so the next probe cannot be observed reliably
+// (the loop may or may not claim once more before it sees the cancel). This
+// checks the path ends cleanly: Run returns and the probe moved the breaker to
+// half open, never straight back to open.
+func TestProbeAbortedAtShutdownEndsWithoutSend(t *testing.T) {
+	h := newProbeHarness(t)
+	h.halfOpenWith(t, func(context.Context) error {
+		h.run.cancel()
+		return errors.New("db unavailable")
+	})
+	h.run.wait(t)
+	got := h.obs.stateList()
+	if len(got) < 2 || got[0] != "sms:1" || got[1] != "sms:2" || slices.Contains(got[2:], "sms:1") {
+		t.Fatalf("states = %v, want open then half open, and no reopening", got)
+	}
 }
