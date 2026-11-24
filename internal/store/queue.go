@@ -39,6 +39,7 @@ type QueueRow struct {
 	NextAttemptAt time.Time
 	CreatedAt     time.Time
 	ScheduledAt   *time.Time
+	RequeuedAt    *time.Time // set by a manual retry; restarts the max delivery age
 	CorrelationID string
 	LeaseToken    string
 	TraceParent   string // W3C traceparent stored by the API; empty when none
@@ -49,7 +50,7 @@ type QueueRow struct {
 
 // claimExpired is true for a row past the max delivery age ($5 seconds, 0
 // disables the check), counted from scheduled_at when set, else created_at.
-const claimExpired = `($5::float8 > 0 AND now() >= COALESCE(scheduled_at, created_at) + make_interval(secs => $5::float8))`
+const claimExpired = `($5::float8 > 0 AND now() >= GREATEST(requeued_at, COALESCE(scheduled_at, created_at)) + make_interval(secs => $5::float8))`
 
 // ClaimSQL is the per priority claim probe: $1 channel, $2 priority, $3 limit,
 // $4 lease token, $5 max delivery age in seconds (0: no age check), $6 the
@@ -72,7 +73,7 @@ WHERE id IN (
   LIMIT $3
   FOR UPDATE SKIP LOCKED)
 RETURNING id::text, batch_id::text, channel, recipient, content, priority, attempts, max_attempts,
-          next_attempt_at, created_at, scheduled_at, correlation_id, COALESCE(lease_token::text, ''),
+          next_attempt_at, created_at, scheduled_at, requeued_at, correlation_id, COALESCE(lease_token::text, ''),
           COALESCE(trace_parent, ''), status = 'failed'`
 
 // Claim probes priority 0, then 1, then 2 (each probe is the spec SQL with
@@ -107,7 +108,7 @@ func (s *Store) ClaimWithAge(ctx context.Context, ch domain.Channel, n int, toke
 				priority int16
 			)
 			if err := rows.Scan(&r.ID, &r.BatchID, &channel, &r.Recipient, &r.Content, &priority, &r.Attempts,
-				&r.MaxAttempts, &r.NextAttemptAt, &r.CreatedAt, &r.ScheduledAt, &r.CorrelationID, &r.LeaseToken, &r.TraceParent, &r.Expired); err != nil {
+				&r.MaxAttempts, &r.NextAttemptAt, &r.CreatedAt, &r.ScheduledAt, &r.RequeuedAt, &r.CorrelationID, &r.LeaseToken, &r.TraceParent, &r.Expired); err != nil {
 				rows.Close()
 				return sortClaimed(out), fmt.Errorf("claim scan: %w", err)
 			}
@@ -267,7 +268,7 @@ type ReapedRow struct {
 // reaped before StartAttempt but after an earlier attempt gets the same row;
 // the history is then a conservative record of a lease that ran out.
 func (s *Store) Reap(ctx context.Context, maxAge time.Duration) ([]ReapedRow, error) {
-	const expired = `now() >= COALESCE(n.scheduled_at, n.created_at) + make_interval(secs => $1::float8)`
+	const expired = `now() >= GREATEST(n.requeued_at, COALESCE(n.scheduled_at, n.created_at)) + make_interval(secs => $1::float8)`
 	rows, err := s.pool.Query(ctx,
 		`WITH upd AS (
 		   UPDATE notifications n SET

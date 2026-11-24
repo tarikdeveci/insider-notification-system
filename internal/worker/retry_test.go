@@ -129,6 +129,17 @@ func TestMaxDeliveryAgeExpires(t *testing.T) {
 			t.Errorf("%s: got %+v want retry", tt.name, got)
 		}
 	}
+	// A manual requeue restarts the window from requeued_at.
+	requeued := created.Add(47 * time.Hour)
+	in := Input{Result: provider.Result{Class: provider.Retryable}, Attempts: 1, MaxAttempts: 5,
+		CreatedAt: created, RequeuedAt: &requeued, Now: created.Add(48 * time.Hour)}
+	if got := p.Decide(in, fixed(0.5)); got.Action != ActionRetry {
+		t.Errorf("requeued origin: got %+v want retry", got)
+	}
+	in.Now = requeued.Add(24 * time.Hour)
+	if got := p.Decide(in, fixed(0.5)); got.Reason != ReasonExpired {
+		t.Errorf("requeued origin at bound: got %+v want expired", got)
+	}
 	// Success and permanent are not subject to the age check.
 	late := Input{Attempts: 1, MaxAttempts: 5, CreatedAt: created, Now: created.Add(48 * time.Hour)}
 	late.Result = provider.Result{Class: provider.Success}

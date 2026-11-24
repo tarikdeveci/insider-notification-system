@@ -65,6 +65,7 @@ type Input struct {
 	MaxAttempts int
 	CreatedAt   time.Time
 	ScheduledAt *time.Time
+	RequeuedAt  *time.Time // a manual retry restarts the age window
 	Now         time.Time
 }
 
@@ -99,6 +100,9 @@ func (p Policy) Decide(in Input, rnd func() float64) Outcome {
 	origin := in.CreatedAt
 	if in.ScheduledAt != nil {
 		origin = *in.ScheduledAt
+	}
+	if in.RequeuedAt != nil && in.RequeuedAt.After(origin) {
+		origin = *in.RequeuedAt
 	}
 	if !in.Now.Before(origin.Add(p.MaxAge)) {
 		return Outcome{Action: ActionFail, Reason: ReasonExpired}

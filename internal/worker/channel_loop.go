@@ -274,7 +274,7 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, lb *limit
 
 	out := e.set.Policy.Decide(Input{
 		Result: res, Attempts: attempt, MaxAttempts: row.MaxAttempts,
-		CreatedAt: row.CreatedAt, ScheduledAt: row.ScheduledAt, Now: e.now(),
+		CreatedAt: row.CreatedAt, ScheduledAt: row.ScheduledAt, RequeuedAt: row.RequeuedAt, Now: e.now(),
 	}, e.rnd)
 
 	fp := store.FinishParams{

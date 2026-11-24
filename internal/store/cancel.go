@@ -41,7 +41,7 @@ func (s *Store) CancelNotification(ctx context.Context, id string) (domain.Notif
 // does not exist and ErrNotFailed when the notification is not failed.
 func (s *Store) RetryNotification(ctx context.Context, id string) (domain.Notification, error) {
 	n, err := scanNotification(s.pool.QueryRow(ctx,
-		`UPDATE notifications SET status = 'pending', attempts = 0, next_attempt_at = now(),
+		`UPDATE notifications SET status = 'pending', attempts = 0, next_attempt_at = now(), requeued_at = now(),
 		   lease_token = NULL, locked_until = NULL, updated_at = now()
 		 WHERE id = $1::uuid AND status = 'failed'
 		 RETURNING `+notificationCols, id))

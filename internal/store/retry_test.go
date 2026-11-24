@@ -144,3 +144,27 @@ func TestRetryRacesReaperAndCancel(t *testing.T) {
 		}
 	})
 }
+
+// A manual retry restarts the delivery window: a row requeued after it passed
+// MAX_DELIVERY_AGE must be claimed and reaped as live, not failed as expired.
+func TestRetryGivesExpiredRowAFreshDeliveryWindow(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	n := failedRow(t, s, pool)
+	exec(t, pool, `UPDATE notifications SET created_at = now() - interval '25 hours' WHERE id=$1::uuid`, n.ID)
+	if _, err := s.RetryNotification(ctx, n.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ClaimWithAge(ctx, domain.ChannelSMS, 5, newToken(t, pool), 24*time.Hour)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("claim: %v %d", err, len(rows))
+	}
+	if rows[0].Expired || rows[0].LeaseToken == "" || rows[0].RequeuedAt == nil {
+		t.Fatalf("requeued row: expired=%v lease=%q requeued_at=%v, want a live claim", rows[0].Expired, rows[0].LeaseToken, rows[0].RequeuedAt)
+	}
+	expireLease(t, pool, n.ID)
+	reaped, err := s.Reap(ctx, 24*time.Hour)
+	if err != nil || len(reaped) != 1 || reaped[0].Status != domain.StatusPending {
+		t.Fatalf("reap: %v %+v, want the row back in pending", err, reaped)
+	}
+}
