@@ -37,6 +37,20 @@ func TestInternalErrorHidesErrorText(t *testing.T) {
 	}
 }
 
+func TestInternalErrorLogsCorrelationIDOnce(t *testing.T) {
+	var buf bytes.Buffer
+	log := observability.NewLogger(&buf, "info")
+	req := httptest.NewRequest("GET", "/x", nil)
+	req = req.WithContext(observability.WithCorrelationID(req.Context(), "cid-1"))
+	internalError(httptest.NewRecorder(), req, log, errors.New("boom"))
+	if n := strings.Count(buf.String(), `"correlation_id"`); n != 1 {
+		t.Fatalf("correlation_id appears %d times: %s", n, buf.String())
+	}
+	if !strings.Contains(buf.String(), `"correlation_id":"cid-1"`) {
+		t.Fatalf("correlation_id value missing: %s", buf.String())
+	}
+}
+
 func TestRecoveredPanicLogsOneAccessRecordWithStatus500(t *testing.T) {
 	const marker = "SENSITIVE-recipient-+905551234567"
 	var buf bytes.Buffer

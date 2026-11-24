@@ -10,7 +10,7 @@ import (
 
 func TestRetryEndpoint(t *testing.T) {
 	pool := testutil.MigratedPool(t)
-	h := api.NewServer(api.Deps{Store: store.New(pool), DB: pool, Redis: fakePinger{}, Logger: discardLogger()})
+	h := api.NewServer(api.Deps{Store: store.New(pool), DB: pool, Logger: discardLogger()})
 	id := obj(t, call(t, h, "POST", "/v1/notifications", smsBody, nil))["id"].(string)
 
 	// pending: 409

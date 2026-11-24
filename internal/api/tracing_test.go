@@ -23,7 +23,7 @@ func newTracedAPI(t *testing.T) (http.Handler, *pgxpool.Pool, *tracetest.SpanRec
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	h := api.NewServer(api.Deps{
-		Store: store.New(pool), DB: pool, Redis: fakePinger{}, Logger: discardLogger(), TracerProvider: tp,
+		Store: store.New(pool), DB: pool, Logger: discardLogger(), TracerProvider: tp,
 	})
 	return h, pool, rec
 }

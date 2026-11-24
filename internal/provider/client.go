@@ -48,6 +48,34 @@ func WithTimeout(d time.Duration) Option {
 	return func(c *Client) { c.http.Timeout = d }
 }
 
+// defaultMaxConns sizes the idle pool when WithMaxConns is not given: the
+// default worker concurrency of 10 per channel across the 3 channels.
+const defaultMaxConns = 30
+
+// WithMaxConns sizes the transport's idle connection pool for n concurrent
+// senders, so none of them reconnects after each request. n < 1 is ignored.
+func WithMaxConns(n int) Option {
+	return func(c *Client) {
+		if n < 1 {
+			return
+		}
+		if tr, ok := c.http.Transport.(*http.Transport); ok {
+			tr.MaxIdleConnsPerHost = n
+			tr.MaxIdleConns = n
+			tr.MaxConnsPerHost = 0
+		}
+	}
+}
+
+// newTransport clones the default transport (proxy, dial, TLS and HTTP/2
+// settings) and sizes the idle pool for the default concurrency.
+func newTransport() *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.MaxIdleConnsPerHost = defaultMaxConns
+	tr.MaxIdleConns = defaultMaxConns
+	return tr
+}
+
 // WithLogger sets the logger; the default discards output.
 func WithLogger(l *slog.Logger) Option {
 	return func(c *Client) {
@@ -77,7 +105,8 @@ func NewClient(rawURL string, opts ...Option) (*Client, error) {
 	c := &Client{
 		url: rawURL,
 		http: &http.Client{
-			Timeout: defaultTimeout,
+			Timeout:   defaultTimeout,
+			Transport: newTransport(),
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},

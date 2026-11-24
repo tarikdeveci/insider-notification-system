@@ -49,11 +49,14 @@ func TestSampleResponsesValidateAgainstSchemas(t *testing.T) {
 	}
 	pool := testutil.MigratedPool(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	newHandler := func(redis error) http.Handler {
+	newHandler := func(pgErr error) http.Handler {
+		var db api.Pinger = pool
+		if pgErr != nil {
+			db = pinger{err: pgErr}
+		}
 		return api.NewServer(api.Deps{
 			Store:   store.New(pool),
-			DB:      pool,
-			Redis:   pinger{err: redis},
+			DB:      db,
 			Logger:  logger,
 			Metrics: observability.NewAPIMetrics(prometheus.NewRegistry()),
 		})

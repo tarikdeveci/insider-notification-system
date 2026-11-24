@@ -58,6 +58,51 @@ func TestValidateCreate(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsControlCharacters(t *testing.T) {
+	tid := "3f0c2c0e-1111-4222-8333-444455556666"
+	cases := []struct {
+		name  string
+		req   domain.CreateRequest
+		field string // empty means valid
+	}{
+		{"content NUL", domain.CreateRequest{Recipient: "+905551234567", Channel: "sms", Content: "a\u0000b"}, "content"},
+		{"content ESC", domain.CreateRequest{Recipient: "+905551234567", Channel: "sms", Content: "a\u001bb"}, "content"},
+		{"content DEL is not C0", domain.CreateRequest{Recipient: "+905551234567", Channel: "sms", Content: "a\u007fb"}, ""},
+		{"content newline and tab ok", domain.CreateRequest{Recipient: "+905551234567", Channel: "sms", Content: "a\n\tb"}, ""},
+		{"push recipient NUL", domain.CreateRequest{Recipient: "tok\u0000", Channel: "push", Content: "x"}, "recipient"},
+		{"email recipient NUL", domain.CreateRequest{Recipient: "a\u0000@example.com", Channel: "email", Content: "x"}, "recipient"},
+		{"var value NUL", domain.CreateRequest{Recipient: "+905551234567", Channel: "sms", TemplateID: &tid, TemplateVars: map[string]string{"a": "x\u0000"}}, "template_vars"},
+		{"var value newline ok", domain.CreateRequest{Recipient: "+905551234567", Channel: "sms", TemplateID: &tid, TemplateVars: map[string]string{"a": "x\ny"}}, ""},
+	}
+	for _, c := range cases {
+		_, errs := c.req.Validate()
+		if c.field == "" {
+			if len(errs) != 0 {
+				t.Errorf("%s: unexpected errors %v", c.name, errs)
+			}
+			continue
+		}
+		if !fields(errs)[c.field] {
+			t.Errorf("%s: want error on %s, got %v", c.name, c.field, errs)
+		}
+		for _, e := range errs {
+			if strings.Contains(e.Message, "\u0000") {
+				t.Errorf("%s: message echoes the value", c.name)
+			}
+		}
+	}
+}
+
+func TestValidateBatchControlCharacterCarriesItemIndex(t *testing.T) {
+	ok := domain.CreateRequest{Recipient: "+905551234567", Channel: "sms", Content: "hi"}
+	bad := ok
+	bad.Content = "hi\u0000"
+	_, errs := domain.ValidateBatch(domain.BatchRequest{Notifications: []domain.CreateRequest{ok, bad}})
+	if len(errs) != 1 || errs[0].Field != "content" || errs[0].Index == nil || *errs[0].Index != 1 {
+		t.Fatalf("errs: %+v", errs)
+	}
+}
+
 func TestHashIgnoresOmittedPriority(t *testing.T) {
 	a, _ := domain.CreateRequest{Recipient: "tok", Channel: "push", Content: "x"}.Validate()
 	b, _ := domain.CreateRequest{Recipient: "tok", Channel: "push", Content: "x", Priority: "normal"}.Validate()

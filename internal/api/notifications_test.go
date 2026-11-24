@@ -15,7 +15,7 @@ import (
 func newAPI(t *testing.T) http.Handler {
 	t.Helper()
 	pool := testutil.MigratedPool(t)
-	return api.NewServer(api.Deps{Store: store.New(pool), DB: pool, Redis: fakePinger{}, Logger: discardLogger()})
+	return api.NewServer(api.Deps{Store: store.New(pool), DB: pool, Logger: discardLogger()})
 }
 
 func call(t *testing.T, h http.Handler, method, path, body string, hdr map[string]string) *httptest.ResponseRecorder {

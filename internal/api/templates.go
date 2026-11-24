@@ -56,6 +56,8 @@ func (s *server) createTemplate(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(req.Name)
 	if n := utf8.RuneCountInString(name); n < 1 || n > maxTemplateName {
 		bad("name", "must be 1 to 100 characters")
+	} else if domain.HasControl(name, false) {
+		bad("name", "must not contain control characters")
 	}
 	ch := domain.Channel(req.Channel)
 	if !ch.Valid() {
@@ -63,8 +65,12 @@ func (s *server) createTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	if n := utf8.RuneCountInString(req.Body); n < 1 || n > maxTemplateText {
 		bad("body", "must be 1 to 10000 characters")
+	} else if domain.HasControl(req.Body, true) {
+		bad("body", "must not contain control characters")
 	} else if _, err := tpl.Parse(req.Body); err != nil {
 		bad("body", err.Error())
+	} else if ch.Valid() && tpl.LiteralRunes(req.Body) > domain.ContentLimit(ch) {
+		bad("body", "literal text exceeds the content limit of the channel")
 	}
 	if len(errs) > 0 {
 		writeProblem(w, r, http.StatusUnprocessableEntity, "validation failed", errs)
@@ -137,9 +143,12 @@ func renderInto(nn *domain.NewNotification, t domain.Template, idx *int) []domai
 	if t.Channel != nn.Channel {
 		return []domain.FieldError{indexed(domain.FieldError{Field: "template_id", Message: "template channel is " + string(t.Channel)}, idx)}
 	}
-	text, missing := tpl.Render(t.Body, nn.TemplateVars)
+	text, missing, tooLong := tpl.RenderMax(t.Body, nn.TemplateVars, domain.ContentLimit(nn.Channel))
 	if len(missing) > 0 {
 		return []domain.FieldError{indexed(domain.FieldError{Field: "template_vars", Message: "missing variables: " + strings.Join(missing, ", ")}, idx)}
+	}
+	if tooLong {
+		return []domain.FieldError{indexed(domain.FieldError{Field: "content", Message: "rendered content: exceeds the limit for this channel"}, idx)}
 	}
 	if cerrs := domain.CheckRenderedContent(nn.Channel, text); len(cerrs) > 0 {
 		for i := range cerrs {
@@ -169,18 +178,35 @@ func (s *server) renderBatch(ctx context.Context, items []domain.NewNotification
 	if err != nil {
 		return nil, err
 	}
+	return renderItems(ctx, items, found)
+}
+
+// maxBatchFieldErrors bounds the errors collected for one batch. Any error
+// already dooms the request to a 422, so rendering stops at this many.
+const maxBatchFieldErrors = 100
+
+// renderItems renders the template items against the loaded templates. It
+// stops early once maxBatchFieldErrors errors are collected and returns the
+// context error as soon as ctx is done.
+func renderItems(ctx context.Context, items []domain.NewNotification, found map[string]domain.Template) ([]domain.FieldError, error) {
 	var errs []domain.FieldError
 	for i := range items {
 		if items[i].TemplateID == nil {
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		idx := i
 		t, ok := found[*items[i].TemplateID]
 		if !ok {
 			errs = append(errs, unknownTemplate(&idx))
-			continue
+		} else {
+			errs = append(errs, renderInto(&items[i], t, &idx)...)
 		}
-		errs = append(errs, renderInto(&items[i], t, &idx)...)
+		if len(errs) >= maxBatchFieldErrors {
+			return errs[:maxBatchFieldErrors], nil
+		}
 	}
 	return errs, nil
 }

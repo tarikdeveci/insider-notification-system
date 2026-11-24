@@ -56,7 +56,7 @@ paths:
     get:
       tags: [health]
       operationId: getReadyz
-      summary: Readiness probe (Postgres and Redis)
+      summary: Readiness probe (Postgres)
       responses:
         "200":
           description: Every dependency answered.
@@ -533,12 +533,9 @@ components:
         checks:
           type: object
           additionalProperties: false
-          required: [postgres, redis]
+          required: [postgres]
           properties:
             postgres:
-              type: string
-              enum: [ok, fail]
-            redis:
               type: string
               enum: [ok, fail]
     CreateNotificationRequest:

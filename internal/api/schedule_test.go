@@ -23,7 +23,7 @@ func (c *fakeClock) Set(t time.Time)  { c.ns.Store(t.UnixNano()) }
 func newAPIWithClock(t *testing.T, c *fakeClock) http.Handler {
 	t.Helper()
 	pool := testutil.MigratedPool(t)
-	return api.NewServer(api.Deps{Store: store.New(pool), DB: pool, Redis: fakePinger{}, Logger: discardLogger(), Now: c.Now})
+	return api.NewServer(api.Deps{Store: store.New(pool), DB: pool, Logger: discardLogger(), Now: c.Now})
 }
 
 // sameInstant reports whether v is an RFC 3339 string for the instant want

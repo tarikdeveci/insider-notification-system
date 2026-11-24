@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/tarikdeveci/insider-notification-system/internal/observability"
@@ -19,16 +18,12 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
-// RedisPinger adapts a go-redis client to Pinger.
-type RedisPinger struct{ Client *redis.Client }
-
-// Ping returns the result of PING.
-func (p RedisPinger) Ping(ctx context.Context) error { return p.Client.Ping(ctx).Err() }
-
 // Deps are the collaborators the handlers need.
 type Deps struct {
-	Store  *store.Store
-	DB     Pinger
+	Store *store.Store
+	DB    Pinger
+	// Redis is ignored: API readiness depends on Postgres only. The field stays
+	// until internal/worker/tracing_test.go stops setting it, then it is removed.
 	Redis  Pinger
 	Logger *slog.Logger
 	// Metrics is optional; nil disables instrumentation and makes /metrics a 404.
@@ -159,19 +154,17 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 func (s *server) readyz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	check := func(p Pinger) string {
-		if p == nil || p.Ping(ctx) != nil {
-			return "fail"
-		}
-		return "ok"
+	// The API only talks to Postgres; Redis belongs to the worker's rate limiter.
+	pg := "ok"
+	if s.DB == nil || s.DB.Ping(ctx) != nil {
+		pg = "fail"
 	}
-	pg, rd := check(s.DB), check(s.Redis)
 	status, code := "ok", http.StatusOK
-	if pg != "ok" || rd != "ok" {
+	if pg != "ok" {
 		status, code = "degraded", http.StatusServiceUnavailable
 	}
 	writeJSON(w, code, map[string]any{
 		"status": status,
-		"checks": map[string]string{"postgres": pg, "redis": rd},
+		"checks": map[string]string{"postgres": pg},
 	})
 }
