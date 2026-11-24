@@ -19,6 +19,27 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+// A row waits for a permit and then sends, all inside one claim lease. A wait
+// bound that leaves no room for the send plus a safety margin lets the lease
+// expire under a live sender, so the reaper would requeue a row mid delivery.
+func TestLoadRejectsRateLimitWaitThatOutlivesLease(t *testing.T) {
+	m := map[string]string{"DATABASE_URL": "postgres://x", "REDIS_URL": "redis://y"}
+	m["RATELIMIT_MAX_WAIT"] = "25s"
+	_, err := config.Load(env(m))
+	if err == nil || !contains(err.Error(), "RATELIMIT_MAX_WAIT") || !contains(err.Error(), "lease") {
+		t.Fatalf("25s wait must be rejected naming RATELIMIT_MAX_WAIT and the lease, got %v", err)
+	}
+	max := config.LeaseDuration - config.ProviderSendTimeout - config.LeaseSafetyMargin
+	m["RATELIMIT_MAX_WAIT"] = (max + time.Second).String()
+	if _, err := config.Load(env(m)); err == nil {
+		t.Error("a wait one second over the allowed maximum must be rejected")
+	}
+	m["RATELIMIT_MAX_WAIT"] = max.String()
+	if _, err := config.Load(env(m)); err != nil {
+		t.Errorf("the largest allowed wait must load, got %v", err)
+	}
+}
+
 func TestLoadRequiresURLs(t *testing.T) {
 	if _, err := config.Load(env(map[string]string{"REDIS_URL": "redis://y"})); err == nil {
 		t.Error("missing DATABASE_URL must fail")

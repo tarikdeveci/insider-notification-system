@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/tarikdeveci/insider-notification-system/internal/config"
 	"github.com/tarikdeveci/insider-notification-system/internal/domain"
 	"github.com/tarikdeveci/insider-notification-system/internal/store"
 )
@@ -72,6 +73,22 @@ func attemptCount(t *testing.T, pool *pgxpool.Pool, id string) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// config validates RATELIMIT_MAX_WAIT against config.LeaseDuration; the SQL
+// literal must stay equal to it.
+func TestClaimLeaseMatchesConfigLeaseDuration(t *testing.T) {
+	s, pool := newStore(t)
+	row, _ := claimOne(t, s, pool)
+	var secs float64
+	err := pool.QueryRow(context.Background(),
+		`SELECT extract(epoch FROM (locked_until - now())) FROM notifications WHERE id = $1::uuid`, row.ID).Scan(&secs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := time.Duration(secs * float64(time.Second)); got < config.LeaseDuration-2*time.Second || got > config.LeaseDuration {
+		t.Fatalf("claim lease is %s, config.LeaseDuration is %s", got, config.LeaseDuration)
+	}
 }
 
 func TestClaimNeverReturnsRowTwice(t *testing.T) {
