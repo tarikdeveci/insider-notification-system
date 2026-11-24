@@ -128,11 +128,15 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
-// ServeHTTP logs method, path, status and key only; never recipients or bodies.
+// ServeHTTP logs method, matched route pattern, status and key only; never recipients or bodies.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	s.mux.ServeHTTP(rec, r)
-	s.log.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status,
+	route := r.Pattern
+	if route == "" {
+		route = "unmatched"
+	}
+	s.log.Info("request", "method", r.Method, "route", route, "status", rec.status,
 		"idempotency_key", r.Header.Get("Idempotency-Key"))
 }
 

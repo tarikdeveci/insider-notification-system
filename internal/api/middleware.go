@@ -54,7 +54,7 @@ func (s *statusRecorder) WriteHeader(code int) {
 
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
-// AccessLog logs one record per request: method, path (no query), status and
+// AccessLog logs one record per request: method, matched route pattern (never the raw path or query), status and
 // duration. Headers and bodies are never logged.
 func AccessLog(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -64,7 +64,7 @@ func AccessLog(log *slog.Logger) func(http.Handler) http.Handler {
 			next.ServeHTTP(rec, r)
 			log.InfoContext(r.Context(), "request",
 				"method", r.Method,
-				"path", r.URL.Path,
+				"route", routeLabel(r),
 				"status", rec.status,
 				"duration_ms", time.Since(start).Milliseconds(),
 			)
@@ -102,4 +102,13 @@ func metricMethod(m string) string {
 		return m
 	}
 	return "OTHER"
+}
+
+// routeLabel returns the mux pattern that served r, or "unmatched" when none did.
+// Call it after the mux ran: the mux sets r.Pattern on the request it receives.
+func routeLabel(r *http.Request) string {
+	if r.Pattern == "" {
+		return "unmatched"
+	}
+	return r.Pattern
 }

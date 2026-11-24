@@ -163,3 +163,20 @@ func TestRoutePatterns(t *testing.T) {
 		t.Fatalf("patterns: %s", got)
 	}
 }
+
+func TestAccessLogUsesRoutePatternNotRawPath(t *testing.T) {
+	var buf strings.Builder
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/notifications/{id}", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+	h := api.AccessLog(log)(mux)
+	get(h, "/v1/notifications/alice@example.com", nil)
+	get(h, "/other/bob@example.com", nil)
+	out := buf.String()
+	if strings.Contains(out, "example.com") || strings.Contains(out, "alice") || strings.Contains(out, "bob") {
+		t.Fatalf("raw path leaked: %s", out)
+	}
+	if !strings.Contains(out, "GET /v1/notifications/{id}") || !strings.Contains(out, `"unmatched"`) {
+		t.Fatalf("route pattern missing: %s", out)
+	}
+}

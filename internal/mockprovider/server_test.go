@@ -310,3 +310,18 @@ func TestConfigRejectsNaNAndInf(t *testing.T) {
 		}
 	}
 }
+
+func TestAccessLogUsesRoutePatternNotRawPath(t *testing.T) {
+	var buf strings.Builder
+	s := New(Options{Config: defaultCfg(), Rand: func() float64 { return 0.5 }, Logger: slog.New(slog.NewJSONHandler(&buf, nil))})
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/alice@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if strings.Contains(buf.String(), "alice") || !strings.Contains(buf.String(), `"unmatched"`) {
+		t.Fatalf("log: %s", buf.String())
+	}
+}
