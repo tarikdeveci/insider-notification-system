@@ -182,6 +182,9 @@ func (r CreateRequest) validateVars(add func(field, msg string)) map[string]stri
 	return r.TemplateVars
 }
 
+// ContentLimit is the content rune limit of a valid channel.
+func ContentLimit(ch Channel) int { return contentLimit(ch) }
+
 // contentLimit is the content rune limit of a valid channel.
 func contentLimit(ch Channel) int {
 	switch ch {

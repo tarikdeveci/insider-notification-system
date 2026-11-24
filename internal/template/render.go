@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // ValidName reports whether s is a legal placeholder or variable name.
@@ -74,8 +75,15 @@ func Parse(body string) ([]string, error) {
 	}
 	seen := map[string]bool{}
 	names := []string{}
+	count := 0
 	for _, s := range segs {
-		if s.isVar && !seen[s.name] {
+		if !s.isVar {
+			continue
+		}
+		if count++; count > MaxPlaceholders {
+			return nil, fmt.Errorf("too many placeholders (at most %d)", MaxPlaceholders)
+		}
+		if !seen[s.name] {
 			seen[s.name] = true
 			names = append(names, s.name)
 		}
@@ -83,21 +91,51 @@ func Parse(body string) ([]string, error) {
 	return names, nil
 }
 
+// MaxPlaceholders caps the placeholder occurrences of one template body.
+const MaxPlaceholders = 100
+
+// LiteralRunes returns the rune count of the literal text of body, that is
+// the part of every rendering that no variable can shrink. A body that does
+// not parse counts as 0.
+func LiteralRunes(body string) int {
+	segs, err := scan(body)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, s := range segs {
+		if !s.isVar {
+			n += utf8.RuneCountInString(s.text)
+		}
+	}
+	return n
+}
+
 // Render substitutes vars into body and returns the text plus the sorted,
 // distinct names that had no value. Extra vars are ignored. A body that does
 // not parse is rendered as empty with no missing names; callers validate with
 // Parse when a template is created, so stored bodies always parse.
 func Render(body string, vars map[string]string) (string, []string) {
+	text, missing, _ := RenderMax(body, vars, -1)
+	return text, missing
+}
+
+// RenderMax is Render with a size guard. It first computes the rendered rune
+// count from the segments and the variable lengths and, when that exceeds
+// maxRunes (maxRunes < 0 disables the guard), returns tooLong without building
+// the text. Missing names are reported before the length is considered.
+func RenderMax(body string, vars map[string]string, maxRunes int) (text string, missing []string, tooLong bool) {
 	segs, err := scan(body)
 	if err != nil {
-		return "", nil
+		return "", nil, false
 	}
-	var b strings.Builder
-	var missing []string
 	seen := map[string]bool{}
+	runes, bytes := 0, 0
+	varRunes := map[string]int{}
 	for _, s := range segs {
 		if !s.isVar {
-			b.WriteString(s.text)
+			runes += utf8.RuneCountInString(s.text)
+			bytes += len(s.text)
 			continue
 		}
 		v, ok := vars[s.name]
@@ -108,8 +146,29 @@ func Render(body string, vars map[string]string) (string, []string) {
 			}
 			continue
 		}
-		b.WriteString(v)
+		n, cached := varRunes[s.name]
+		if !cached {
+			n = utf8.RuneCountInString(v)
+			varRunes[s.name] = n
+		}
+		runes += n
+		bytes += len(v)
 	}
-	sort.Strings(missing)
-	return b.String(), missing
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return "", missing, false
+	}
+	if maxRunes >= 0 && runes > maxRunes {
+		return "", nil, true
+	}
+	var b strings.Builder
+	b.Grow(bytes)
+	for _, s := range segs {
+		if s.isVar {
+			b.WriteString(vars[s.name])
+		} else {
+			b.WriteString(s.text)
+		}
+	}
+	return b.String(), nil, false
 }

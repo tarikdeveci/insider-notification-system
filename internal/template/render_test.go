@@ -2,6 +2,8 @@ package template_test
 
 import (
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/tarikdeveci/insider-notification-system/internal/template"
@@ -53,6 +55,55 @@ func TestParseRejectsMalformedPlaceholders(t *testing.T) {
 		if _, err := template.Parse(body); err == nil {
 			t.Errorf("%q must be rejected", body)
 		}
+	}
+}
+
+func TestRenderMaxRejectsOversizeWithoutBuilding(t *testing.T) {
+	body := strings.Repeat("{{a}}", template.MaxPlaceholders)
+	vars := map[string]string{"a": strings.Repeat("x", 1000)}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	text, missing, tooLong := template.RenderMax(body, vars, 160)
+	runtime.ReadMemStats(&after)
+	if !tooLong || text != "" || len(missing) != 0 {
+		t.Fatalf("tooLong=%v len=%d missing=%v", tooLong, len(text), missing)
+	}
+	// The rendered text would be 100000 bytes; rejecting must not allocate it.
+	if d := after.TotalAlloc - before.TotalAlloc; d > 50_000 {
+		t.Fatalf("allocated %d bytes while rejecting", d)
+	}
+}
+
+func TestRenderMaxCountsRunesAndAcceptsExactLimit(t *testing.T) {
+	vars := map[string]string{"a": "çç"}
+	if got, _, tooLong := template.RenderMax("{{a}}ab", vars, 4); tooLong || got != "ççab" {
+		t.Fatalf("exact limit: %q tooLong=%v", got, tooLong)
+	}
+	if _, _, tooLong := template.RenderMax("{{a}}abc", vars, 4); !tooLong {
+		t.Fatal("one rune over the limit must be too long")
+	}
+}
+
+func TestRenderMaxReportsMissingBeforeLength(t *testing.T) {
+	_, missing, tooLong := template.RenderMax("{{a}}{{b}}", map[string]string{"a": "xxxxxxxx"}, 3)
+	if tooLong || !reflect.DeepEqual(missing, []string{"b"}) {
+		t.Fatalf("missing=%v tooLong=%v", missing, tooLong)
+	}
+}
+
+func TestParseCapsPlaceholders(t *testing.T) {
+	if _, err := template.Parse(strings.Repeat("{{a}}", template.MaxPlaceholders)); err != nil {
+		t.Fatalf("at the cap: %v", err)
+	}
+	if _, err := template.Parse(strings.Repeat("{{a}}", template.MaxPlaceholders+1)); err == nil {
+		t.Fatal("over the cap must fail")
+	}
+}
+
+func TestLiteralRunesIgnoresPlaceholders(t *testing.T) {
+	if n := template.LiteralRunes("çab{{ name }}cd{{x}}"); n != 5 {
+		t.Fatalf("got %d", n)
 	}
 }
 
