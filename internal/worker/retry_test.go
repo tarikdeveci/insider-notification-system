@@ -70,13 +70,13 @@ func TestDecisionTable(t *testing.T) {
 	}{
 		{"success", with(provider.Result{Class: provider.Success}, 1), Outcome{Action: ActionSent}},
 		{"throttled with retry-after", with(provider.Result{Class: provider.Throttled, RetryAfter: 7 * time.Second}, 5),
-			Outcome{Action: ActionRetry, NextAttemptAt: now.Add(7 * time.Second), GiveBackAttempt: true}},
+			Outcome{Action: ActionRetry, Delay: 7 * time.Second, GiveBackAttempt: true}},
 		{"throttled no retry-after uses backoff", with(provider.Result{Class: provider.Throttled}, 3),
-			Outcome{Action: ActionRetry, NextAttemptAt: now.Add(2 * time.Second), GiveBackAttempt: true}},
+			Outcome{Action: ActionRetry, Delay: 2 * time.Second, GiveBackAttempt: true}},
 		{"throttled at max attempts never fails", with(provider.Result{Class: provider.Throttled, RetryAfter: time.Second}, 99),
-			Outcome{Action: ActionRetry, NextAttemptAt: now.Add(time.Second), GiveBackAttempt: true}},
+			Outcome{Action: ActionRetry, Delay: time.Second, GiveBackAttempt: true}},
 		{"retryable under max", with(provider.Result{Class: provider.Retryable}, 2),
-			Outcome{Action: ActionRetry, NextAttemptAt: now.Add(1 * time.Second)}},
+			Outcome{Action: ActionRetry, Delay: 1 * time.Second}},
 		{"retryable at max", with(provider.Result{Class: provider.Retryable}, 5),
 			Outcome{Action: ActionFail, Reason: ReasonExhausted}},
 		{"permanent", with(provider.Result{Class: provider.Permanent}, 1),
@@ -87,9 +87,9 @@ func TestDecisionTable(t *testing.T) {
 		want := tt.want
 		switch tt.name {
 		case "throttled no retry-after uses backoff":
-			want.NextAttemptAt = now.Add(2 * time.Second) // 0.25 * 8s
+			want.Delay = 2 * time.Second // 0.25 * 8s
 		case "retryable under max":
-			want.NextAttemptAt = now.Add(1 * time.Second) // 0.25 * 4s
+			want.Delay = 1 * time.Second // 0.25 * 4s
 		}
 		if got != want {
 			t.Errorf("%s: got %+v want %+v", tt.name, got, want)
@@ -148,8 +148,8 @@ func TestClockAndJitterInjectable(t *testing.T) {
 	calls := 0
 	rnd := func() float64 { calls++; return 0.5 }
 	got := p.Decide(in, rnd)
-	if want := now.Add(2 * time.Second); got.NextAttemptAt != want {
-		t.Errorf("got %v want %v", got.NextAttemptAt, want)
+	if want := 2 * time.Second; got.Delay != want {
+		t.Errorf("got %v want %v", got.Delay, want)
 	}
 	if calls != 1 {
 		t.Errorf("rnd called %d times, want 1", calls)

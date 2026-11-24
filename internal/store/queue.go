@@ -159,7 +159,7 @@ type FinishAction int
 
 const (
 	FinishSent  FinishAction = iota + 1 // status sent, sent_at now(), provider_message_id (NULL when ""), last_error NULL
-	FinishRetry                         // status pending, next_attempt_at = NextAttemptAt, last_error = LastError, attempts - 1 when GiveBackAttempt
+	FinishRetry                         // status pending, next_attempt_at = db now() + RetryDelay, last_error = LastError, attempts - 1 when GiveBackAttempt
 	FinishFail                          // status failed, last_error = LastError
 )
 
@@ -172,7 +172,7 @@ type FinishParams struct {
 	HTTPStatus        int    // 0 stores NULL
 	AttemptError      string // "" stores NULL; the classified LastError text, never raw errors
 	ProviderMessageID string
-	NextAttemptAt     time.Time
+	RetryDelay        time.Duration // FinishRetry: added to the database clock, so worker clock skew cannot move the retry
 	GiveBackAttempt   bool
 	LastError         string
 }
@@ -193,9 +193,9 @@ func (s *Store) FinishAttempt(ctx context.Context, p FinishParams) error {
 		sql = `UPDATE notifications SET status = 'sent', sent_at = now(), provider_message_id = NULLIF($3, ''), last_error = NULL` + finishTail
 		args = append(args, p.ProviderMessageID)
 	case FinishRetry:
-		sql = `UPDATE notifications SET status = 'pending', next_attempt_at = $3, last_error = $4,
+		sql = `UPDATE notifications SET status = 'pending', next_attempt_at = now() + make_interval(secs => $3::float8), last_error = $4,
 		 attempts = attempts - CASE WHEN $5::boolean THEN 1 ELSE 0 END` + finishTail
-		args = append(args, p.NextAttemptAt, p.LastError, p.GiveBackAttempt)
+		args = append(args, max(p.RetryDelay, 0).Seconds(), p.LastError, p.GiveBackAttempt)
 	case FinishFail:
 		sql = `UPDATE notifications SET status = 'failed', last_error = $3` + finishTail
 		args = append(args, p.LastError)

@@ -285,7 +285,7 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, lb *limit
 	case ActionSent:
 		fp.Action, fp.ProviderMessageID = store.FinishSent, res.MessageID
 	case ActionRetry:
-		fp.Action, fp.NextAttemptAt, fp.GiveBackAttempt = store.FinishRetry, out.NextAttemptAt, out.GiveBackAttempt
+		fp.Action, fp.RetryDelay, fp.GiveBackAttempt = store.FinishRetry, out.Delay, out.GiveBackAttempt
 		fp.LastError = res.LastError()
 	default:
 		fp.Action = store.FinishFail

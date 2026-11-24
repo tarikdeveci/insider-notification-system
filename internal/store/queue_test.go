@@ -66,6 +66,15 @@ func state(t *testing.T, pool *pgxpool.Pool, id string) rowState {
 	return r
 }
 
+func dbNow(t *testing.T, pool *pgxpool.Pool) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := pool.QueryRow(context.Background(), `SELECT now()`).Scan(&now); err != nil {
+		t.Fatal(err)
+	}
+	return now
+}
+
 func attemptCount(t *testing.T, pool *pgxpool.Pool, id string) int {
 	t.Helper()
 	var n int
@@ -378,15 +387,20 @@ func TestResultTransactionWritesAttemptRow(t *testing.T) {
 	t.Run("retry", func(t *testing.T) {
 		row, tok := claimOne(t, s, pool)
 		attempt, started, _ := s.StartAttempt(ctx, row.ID, tok)
-		next := time.Now().Add(time.Hour).Truncate(time.Microsecond)
+		before := dbNow(t, pool)
 		err := s.FinishAttempt(ctx, store.FinishParams{ID: row.ID, Token: tok, Action: store.FinishRetry, AttemptNo: attempt, StartedAt: started,
-			HTTPStatus: 503, AttemptError: "provider 5xx", NextAttemptAt: next, LastError: "provider 5xx"})
+			HTTPStatus: 503, AttemptError: "provider 5xx", RetryDelay: time.Hour, LastError: "provider 5xx"})
 		if err != nil {
 			t.Fatal(err)
 		}
+		after := dbNow(t, pool)
 		st := state(t, pool, row.ID)
-		if st.status != "pending" || st.attempts != 1 || !st.next.Equal(next) || st.lastErr == nil || *st.lastErr != "provider 5xx" || st.lease != nil || st.locked != nil {
+		if st.status != "pending" || st.attempts != 1 || st.lastErr == nil || *st.lastErr != "provider 5xx" || st.lease != nil || st.locked != nil {
 			t.Fatalf("state: %+v", st)
+		}
+		// The retry is scheduled on the database clock, not the worker's.
+		if st.next.Before(before.Add(time.Hour)) || st.next.After(after.Add(time.Hour)) {
+			t.Fatalf("next_attempt_at %v not within db now + 1h [%v, %v]", st.next, before.Add(time.Hour), after.Add(time.Hour))
 		}
 		var e *string
 		if err := pool.QueryRow(ctx, `SELECT error FROM notification_attempts WHERE notification_id = $1::uuid`, row.ID).Scan(&e); err != nil || e == nil || *e != "provider 5xx" {
@@ -445,7 +459,7 @@ func TestThrottledResultGivesAttemptBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = s.FinishAttempt(ctx, store.FinishParams{ID: row.ID, Token: tok, Action: store.FinishRetry, AttemptNo: attempt, StartedAt: started,
-		HTTPStatus: 429, AttemptError: "throttled", NextAttemptAt: time.Now().Add(time.Second), GiveBackAttempt: true, LastError: "throttled"})
+		HTTPStatus: 429, AttemptError: "throttled", RetryDelay: time.Second, GiveBackAttempt: true, LastError: "throttled"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +530,7 @@ func TestAttemptHistoryHasUnambiguousSequence(t *testing.T) {
 			t.Fatal(err)
 		}
 		err = s.FinishAttempt(ctx, store.FinishParams{ID: row.ID, Token: tok, Action: store.FinishRetry, AttemptNo: attempt, StartedAt: started,
-			HTTPStatus: 429, AttemptError: "throttled", NextAttemptAt: time.Now(), GiveBackAttempt: true, LastError: "throttled"})
+			HTTPStatus: 429, AttemptError: "throttled", RetryDelay: 0, GiveBackAttempt: true, LastError: "throttled"})
 		if err != nil {
 			t.Fatal(err)
 		}
