@@ -9,8 +9,8 @@ DRAIN_TIMEOUT="${DRAIN_TIMEOUT:-900}"
 MOCK="http://localhost:9090"
 rc=0
 
-# docker-compose.yml takes these from the host environment; a developer shell may point them at a
-# real database. The load test must only ever touch its own containers.
+# docker-compose.yml pins the database and Redis URLs; PROVIDER_URL is still read from the host,
+# so unset it to make sure the burst only ever hits the local mock provider.
 unset DATABASE_URL REDIS_URL PROVIDER_URL
 
 psql() { docker compose exec -T postgres psql -U notif -d notif -At -F ' ' -c "$1"; }
@@ -26,7 +26,7 @@ echo "provider config: $(curl -fsS "$MOCK/_control/config")"
 t0=$(date +%s)
 docker run --rm -i --add-host=host.docker.internal:host-gateway \
   -e TOTAL="$TOTAL" -e BASE_URL=http://host.docker.internal:8080 \
-  grafana/k6:latest run - < tests/load/burst.js || rc=1
+  grafana/k6:2.4.0 run - < tests/load/burst.js || rc=1
 t1=$(date +%s)
 echo "burst phase: $((t1 - t0))s"
 [ "$rc" -eq 0 ] || { echo "k6 failed"; exit 1; }
