@@ -64,6 +64,9 @@ RETURNING id::text, batch_id::text, channel, recipient, content, priority, attem
 // $2 = that priority and $3 = rows still needed), stops once n rows are
 // claimed, and returns rows sorted by (priority, next_attempt_at, id).
 // n < 1 returns nil, nil. token is a uuid string, fresh per Claim call.
+// When a later probe fails, the rows earlier probes already moved to
+// processing are returned together with the error: the caller owns them and
+// must process or release them.
 func (s *Store) Claim(ctx context.Context, ch domain.Channel, n int, token string) ([]QueueRow, error) {
 	if n < 1 {
 		return nil, nil
@@ -72,7 +75,7 @@ func (s *Store) Claim(ctx context.Context, ch domain.Channel, n int, token strin
 	for prio := domain.PriorityHigh; prio <= domain.PriorityLow && len(out) < n; prio++ {
 		rows, err := s.pool.Query(ctx, ClaimSQL, string(ch), int16(prio), n-len(out), token)
 		if err != nil {
-			return nil, fmt.Errorf("claim: %w", err)
+			return sortClaimed(out), fmt.Errorf("claim: %w", err)
 		}
 		for rows.Next() {
 			var (
@@ -83,16 +86,21 @@ func (s *Store) Claim(ctx context.Context, ch domain.Channel, n int, token strin
 			if err := rows.Scan(&r.ID, &r.BatchID, &channel, &r.Recipient, &r.Content, &priority, &r.Attempts,
 				&r.MaxAttempts, &r.NextAttemptAt, &r.CreatedAt, &r.ScheduledAt, &r.CorrelationID, &r.LeaseToken, &r.TraceParent); err != nil {
 				rows.Close()
-				return nil, fmt.Errorf("claim scan: %w", err)
+				return sortClaimed(out), fmt.Errorf("claim scan: %w", err)
 			}
 			r.Channel = domain.Channel(channel)
 			r.Priority = domain.Priority(priority)
 			out = append(out, r)
 		}
 		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("claim rows: %w", err)
+			return sortClaimed(out), fmt.Errorf("claim rows: %w", err)
 		}
 	}
+	return sortClaimed(out), nil
+}
+
+// sortClaimed orders rows by (priority, next_attempt_at, id).
+func sortClaimed(out []QueueRow) []QueueRow {
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if a.Priority != b.Priority {
@@ -103,7 +111,7 @@ func (s *Store) Claim(ctx context.Context, ch domain.Channel, n int, token strin
 		}
 		return a.ID < b.ID
 	})
-	return out, nil
+	return out
 }
 
 // StartAttempt increments attempts and renews the lease in one token fenced

@@ -82,10 +82,12 @@ func (e *Engine) channelLoop(ctx, drain context.Context, ch domain.Channel) {
 		for i := len(rows); i < n; i++ {
 			<-slots // free the slots no row will use
 		}
-		if err != nil || len(rows) == 0 {
-			if err != nil && ctx.Err() == nil {
-				log.Error("claim failed", observability.ErrAttrs(err)...)
-			}
+		if err != nil && ctx.Err() == nil {
+			log.Error("claim failed", observability.ErrAttrs(err)...)
+		}
+		// A failed claim may still hand back rows an earlier probe moved to
+		// processing: they are ours and are processed below.
+		if len(rows) == 0 {
 			if !sleep(ctx, idle) {
 				return
 			}

@@ -91,6 +91,34 @@ func TestClaimLeaseMatchesConfigLeaseDuration(t *testing.T) {
 	}
 }
 
+// A later priority probe that fails must not drop rows an earlier probe already
+// moved to processing: Claim returns them together with the error.
+func TestClaimReturnsRowsOfEarlierProbeWithError(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	high, err := s.CreateNotification(ctx, store.CreateParams{
+		New:           domain.NewNotification{Channel: domain.ChannelSMS, Recipient: recipientFor(domain.ChannelSMS), Content: "h", Priority: domain.PriorityHigh},
+		CorrelationID: "t",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustCreate(t, s, domain.ChannelSMS, "normal") // priority 1: its probe is made to fail
+	exec(t, pool, `CREATE FUNCTION fail_normal() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'probe failure'; END $$ LANGUAGE plpgsql`)
+	exec(t, pool, `CREATE TRIGGER fail_normal BEFORE UPDATE ON notifications FOR EACH ROW WHEN (NEW.priority = 1 AND NEW.status = 'processing') EXECUTE FUNCTION fail_normal()`)
+
+	rows, err := s.Claim(ctx, domain.ChannelSMS, 5, newToken(t, pool))
+	if err == nil {
+		t.Fatal("want the failed probe's error")
+	}
+	if len(rows) != 1 || rows[0].ID != high.Notification.ID {
+		t.Fatalf("want the high priority row returned with the error, got %d rows", len(rows))
+	}
+	if st := state(t, pool, high.Notification.ID); st.status != "processing" {
+		t.Fatalf("high priority row status = %s, want processing", st.status)
+	}
+}
+
 func TestClaimNeverReturnsRowTwice(t *testing.T) {
 	s, pool := newStore(t)
 	ctx := context.Background()
