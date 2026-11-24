@@ -180,7 +180,10 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, row store
 		case errors.Is(err, ratelimit.ErrWaitExceeded):
 			reason = releaseWaitExceeded
 		}
-		if reason != releaseShutdown {
+		// A wait that hit its bound is a real observation of how long rows wait.
+		// A limiter error carries no wait (waited is 0) and shutdown cuts the
+		// wait short, so neither may skew the histogram toward zero.
+		if reason == releaseWaitExceeded {
 			e.obs.RateLimitWait(ch, waited)
 		}
 		e.release(ctx, log, row, reason)
