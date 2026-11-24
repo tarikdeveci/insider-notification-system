@@ -23,7 +23,7 @@ Each probe is an equality on channel and priority plus a range on `next_attempt_
 
 ## Consequences
 
-Good: high priority work always goes first, the behavior is easy to explain and test, and each probe is a cheap index range scan.
+Good: high priority work is always claimed first (rows claimed together still go to concurrent senders, so they can finish out of order), the behavior is easy to explain and test, and each probe is a cheap index range scan.
 
 Bad: under sustained high priority load, low priority rows can starve, because they are only claimed when higher priorities are empty. Since the channel is capped at 100 sends per second, a high priority stream at that rate blocks everything below it.
 

@@ -13,7 +13,7 @@ Exactly once delivery across two systems that share no transaction is not achiev
 Delivery is at least once. Exactly once is not claimed.
 
 - Every provider call carries the header `Idempotency-Key: <notification id>`. The id is stable across retries and resends, so the provider can recognize a repeat.
-- The mock provider deduplicates on that header and answers a repeat with the original message id and `deduplicated: true`, to demonstrate the contract.
+- The mock provider deduplicates on that header and answers a repeat with the original message id and marks it `deduplicated` in its arrival log, to demonstrate the contract.
 - A 2xx is final: the row becomes `sent` and is never retried.
 - Ownership is fenced by `lease_token` (ADR 0001), so a stale worker cannot overwrite a newer result. This limits duplicate writes to our database, not duplicate sends.
 - An attempt with an unknown outcome counts as used (ADR 0002), because the provider may have received it.

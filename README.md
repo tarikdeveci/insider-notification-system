@@ -1,10 +1,10 @@
 # Insider notification system
 
-An event driven notification service in Go. An HTTP API accepts SMS, email and push notifications, Postgres stores them and doubles as the queue, workers deliver them to an external provider (webhook.site or the bundled mock), and a Redis GCRA limiter keeps every channel at or below 100 messages per second across all worker replicas.
+An event driven notification service in Go. An HTTP API accepts SMS, email and push notifications, Postgres stores them and doubles as the queue, workers deliver them to an external provider (webhook.site or the bundled mock), and a Redis GCRA limiter admits at most 100 sends per second per channel across all worker replicas.
 
 ## Quick start
 
-Requirements: Docker with Compose v2. Nothing else is needed to run the system.
+Requirements: Docker with Compose 2.24 or newer (the optional `env_file` entry needs it). Nothing else is needed to run the system.
 
 ```bash
 docker compose up -d --build     # or: make up
@@ -47,9 +47,9 @@ curl -s -X POST localhost:8080/v1/batches/<batch_id>/cancel
 # List with filters and cursor pagination
 curl -s 'localhost:8080/v1/notifications?status=sent&channel=sms&limit=20'
 
-# Scheduled send (future, at most 30 days ahead)
+# Scheduled send: replace the time with one in the next 30 days (further ahead is a 422)
 curl -s -X POST localhost:8080/v1/notifications -H 'Content-Type: application/json' \
-  -d '{"recipient":"+905551234567","channel":"sms","content":"Reminder","scheduled_at":"2030-01-01T09:00:00Z"}'
+  -d '{"recipient":"+905551234567","channel":"sms","content":"Reminder","scheduled_at":"2026-12-01T09:00:00Z"}'
 
 # Templates with {{var}} substitution, rendered and validated at create time
 curl -s -X POST localhost:8080/v1/templates -H 'Content-Type: application/json' \
@@ -64,7 +64,7 @@ curl -s -X POST localhost:8080/v1/notifications/<id>/retry
 curl -s localhost:8080/metrics | grep notifications_
 ```
 
-The full contract is `api/openapi.yaml` (OpenAPI 3.0.3). A contract test keeps it in sync with the router, and about 70 real responses are validated against it.
+The full contract is `api/openapi.yaml` (OpenAPI 3.0.3). A contract test keeps it in sync with the router, and 53 real responses are validated against it.
 
 ## Architecture
 
@@ -97,7 +97,7 @@ pending --claim--> processing --2xx--> sent
 failed --POST /retry--> pending
 ```
 
-Every transition is one `UPDATE ... WHERE status = <expected>` and every write out of `processing` also requires the row's `lease_token`, so races (cancel against claim, two workers, a stale worker after the reaper) are settled by Postgres. A worker whose update matches zero rows has lost the row and drops it.
+Every transition is one `UPDATE ... WHERE status = <expected>` and every worker write out of `processing` also requires the row's `lease_token` (the reaper instead matches on an expired lease), so races (cancel against claim, two workers, a stale worker after the reaper) are settled by Postgres. A worker whose update matches zero rows has lost the row and drops it.
 
 ## API
 
@@ -123,9 +123,9 @@ What a marketer can rely on:
 
 - **Accepted means stored.** A 201 means the notification is committed in Postgres. A crash of any process after that does not lose it.
 - **At least once, not exactly once.** If a worker dies after the provider accepted a message but before the row is marked `sent`, the reaper requeues it and it is sent again. Every provider call carries `Idempotency-Key: <notification id>` so a provider that honors it (the mock does) drops the duplicate. Exactly once is not claimed.
-- **Never faster than 100 per second per channel**, across all worker replicas, because the limit lives in Redis and the clock is Redis's.
-- **High before normal before low**, strictly.
-- **Retries are bounded.** Up to 8 real send attempts with exponential backoff and full jitter (base 2s, cap 10 min; about 4 minutes worst case across the 7 waits). 429 responses do not use an attempt but honor `Retry-After`. Nothing is retried after 24 hours (`MAX_DELIVERY_AGE`): a flash sale SMS a day late is worse than none.
+- **At most 100 sends admitted per second per channel**, across all worker replicas, because the limit lives in Redis and the clock is Redis's. Measured at the provider, network jitter adds a few percent (see the load test).
+- **High before normal before low** when rows are claimed. Rows claimed together go to concurrent senders, so within one claim a lower priority row can finish first.
+- **Retries are bounded.** Up to 8 real send attempts with exponential backoff and full jitter (base 2s, cap 10 min; about 4 minutes worst case across the 7 waits). 429 responses do not use an attempt but honor `Retry-After`. No new retry is scheduled once a notification is 24 hours old (`MAX_DELIVERY_AGE`): a flash sale SMS a day late is worse than none. The age is checked when an attempt ends, so an attempt already due can still send just past the limit, and a 429 past the limit fails and keeps its attempt.
 - **Failures are visible and recoverable.** `failed` is the dead letter state: list it with `status=failed`, read every attempt with its HTTP status and error, and requeue with `/retry`.
 - **Cancel is safe.** It only succeeds while the row is still pending; a row already being sent returns 409.
 - **If Redis is down, sending pauses** (the limiter fails closed) and `/readyz` reports `degraded`, instead of risking provider limits during a campaign.
@@ -136,7 +136,7 @@ What a marketer can rely on:
 |---|---|
 | Postgres (pgx/v5) | Source of truth and the queue. Creating and enqueuing is one insert. One claim query covers priority, retry delay and scheduled delivery. The case's ceiling is 300 sends per second in total, well inside one Postgres. |
 | Redis (go-redis/v9) | The rate limit must hold across worker replicas, so it cannot be an in-memory counter. One Lua script per channel, Redis clock. |
-| GCRA instead of a token bucket | A bucket of 100 allows about 200 sends in a window that straddles a refill. GCRA spaces grants at least 10 ms apart, so no 1 second window holds more than 100. |
+| GCRA instead of a token bucket | A bucket of 100 allows about 200 sends in a window that straddles a refill. GCRA spaces grants at least 10 ms apart, so no 1 second window of grants holds more than 100. |
 | Separate `api` and `worker` | Scale delivery without scaling the API: `docker compose up -d --scale worker=3`. |
 | `mock-provider` | webhook.site free URLs cannot absorb e2e and load tests. The mock has configurable latency, failure rate and status scripts, records arrival times and dedups by `Idempotency-Key`. |
 | golang-migrate | Versioned, append only migrations, embedded in the binary and run by a one shot `migrate` service before anything else starts. |
@@ -148,31 +148,31 @@ What a marketer can rely on:
 
 ## Observability
 
-- **Metrics:** `GET /metrics` on the API; the worker exposes its own on port 8081 inside the compose network. Queue depth is computed by the API only (one collector, not one per replica) every 5 seconds.
-- **Logs:** JSON via slog. Recipients, content, template variables, the provider URL and provider response bodies are never logged.
+- **Metrics:** `GET /metrics` on the API; the worker exposes its own on port 8081 inside the compose network. Queue depth is computed by the API only (one collector, not one per replica) when `/metrics` is scraped, cached for 5 seconds.
+- **Logs:** JSON via slog. Recipients, content, template variables, the provider URL and provider response bodies are never logged. Access logs record the matched route pattern, not the raw path, so an id typed into a URL cannot leak.
 - **Tracing:** `make up-tracing` starts the stack with a Jaeger container and sets `OTEL_EXPORTER_OTLP_ENDPOINT`. Open `http://localhost:16686`. The API stores the W3C `traceparent` on the row; the worker's `deliver` span is its child, and the `provider.send` span injects `traceparent` into the outgoing request. Without the variable, tracing exports nothing.
 
 ## Tests and numbers
 
-257 test functions (plus 24 named subtests), all run with `-race`:
+261 test functions, all run with `-race`:
 
 | Suite | Tests | What it covers | Time on my machine |
 |---|---|---|---|
-| `make test`, internal packages | 232 | Domain validation, retry policy, breaker, templates, provider classification; store, limiter and API tests against real Postgres and Redis in testcontainers (claim races, lease fencing, idempotency races, limiter spacing) | about 25s with a warm build cache |
+| `make test`, internal packages | 234 | Domain validation, retry policy, breaker, templates, provider classification; store, limiter and API tests against real Postgres and Redis in testcontainers (claim races, lease fencing, idempotency races, limiter spacing) | 25s to 45s depending on the build cache |
 | `make test`, `tests/integration` and `tests/contract` | 9 | Every route and response validated against `api/openapi.yaml`; compose config checks (tracing profile, host env isolation) | included above |
-| `make e2e` | 15 | The full compose stack: API phase with the worker stopped, then engine phase (delivery, 5xx retries, permanent and exhausted failures, 429 handling, scheduled sends, priority order, cancel before claim, rate per channel) | 86s in total (API phase 1.6s, engine phase 45s) |
+| `make e2e` | 15 | The full compose stack: API phase with the worker stopped, then engine phase (delivery, 5xx retries, permanent and exhausted failures, 429 handling, scheduled sends, priority order, cancel before claim, rate per channel) | 72s to 86s in total (API phase under 2s, engine phase 45s to 54s) |
 
-Plus one mock provider test in `cmd/`. CI runs lint, test and e2e on every push.
+Plus one mock provider test in `cmd/` and two load checker tests in `tests/load/arrivals`. CI runs lint, test and e2e on every push.
 
 **Load test** (`make load`, k6 against the compose stack, one worker replica with the default 10 senders per channel, mock provider with its default latency):
 
 | | Result |
 |---|---|
-| Burst | 10,000 notifications in 10 batch requests of 1,000, split evenly across sms, email and push, accepted in 0.2s (batch request p95 84ms) |
+| Burst | 10,000 notifications in 10 batch requests of 1,000, split evenly across sms, email and push, accepted in 0.2s (batch request p95 79ms) |
 | Outcome | 10,000 `sent`, 0 failed, queue drained 43s after the burst |
-| Delivery rate | 93.6 per second per channel, against the 100 per second limit |
-| Rate limit, measured at the provider | Busiest 1 second sliding window: 102 arrivals per channel. The limiter spaces grants 10ms apart with no burst; the 2 extra are network jitter between grant and arrival. The check allows 105. |
-| End to end latency (created to sent) | p50 18.6s, p95 34.4s. Almost all of it is queue wait: 3,333 messages at 100 per second need 33s per channel, so p95 is close to the floor the rate limit sets. |
+| Delivery rate | 87.2 per second per channel on the latest run (93.6 on an earlier one), against the 100 per second limit |
+| Rate limit, measured at the provider | Busiest 1 second sliding window: 101 arrivals per channel (102 on an earlier run). The limiter spaces grants 10ms apart with no burst; the extra 1 or 2 are network jitter between grant and arrival. The check allows 105. |
+| End to end latency (created to sent) | p50 18.4s, p95 37.2s. Almost all of it is queue wait: 3,333 messages at 100 per second need 33s per channel, so p95 is close to the floor the rate limit sets. |
 
 ## Deliberately not built
 
@@ -188,7 +188,7 @@ Plus one mock provider test in `cmd/`. CI runs lint, test and e2e on every push.
 - Only real send attempts count toward the 8 attempt budget. 429 and breaker pauses do not.
 - `max_attempts` is 8 for every notification and not configurable per request.
 - Batches are all or nothing: one invalid item rejects the whole request with per item errors by index, so a client can fix and resend with the same key. Only the batch has an idempotency key.
-- Priority is strict. Low priority can starve under sustained high load (see next steps).
+- Priority is strict at claim time. Low priority can starve under sustained high load (see next steps).
 - An attempt whose outcome is unknown (worker died mid send) counts as used, because the provider may have received it.
 - Idempotency keys are kept forever.
 - Template rendering happens at create time; a missing variable is a 422.
@@ -201,7 +201,7 @@ Plus one mock provider test in `cmd/`. CI runs lint, test and e2e on every push.
 - **Idempotency keys never expire.** Next step: a TTL and a cleanup job.
 - **One Postgres primary.** Fine for 300 sends per second. The queue sits behind an interface; at much larger scale, partition by channel and move to Kafka or Redis Streams with an outbox (see `docs/adr/`).
 - **After a manual retry, a row that had already reached `MAX_DELIVERY_AGE` gets one attempt** before it expires again, because age is measured from `COALESCE(scheduled_at, created_at)`.
-- **A claim interrupted by shutdown** can leave its rows in `processing` until the reaper returns them (at most the 30 second lease).
+- **A claim interrupted by shutdown** can leave its rows in `processing` until the reaper returns them (the 30 second lease plus one reaper tick, 5 seconds by default).
 - **`queue_depth` is absent from `/metrics` until the first successful refresh** after the API starts.
 - **The e2e rate check measures wall clock rates,** so a very slow host can make it flaky. CI on Linux is the reference.
 - The OpenAPI spec does not document the router's own 405 and unmatched route 404 responses.
