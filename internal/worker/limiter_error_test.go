@@ -24,8 +24,8 @@ type nonEmptyQueue struct {
 	claims atomic.Int32
 }
 
-func (q *nonEmptyQueue) Claim(ctx context.Context, ch domain.Channel, n int, token string) ([]store.QueueRow, error) {
-	rows, err := q.Queue.Claim(ctx, ch, n, token)
+func (q *nonEmptyQueue) ClaimWithAge(ctx context.Context, ch domain.Channel, n int, token string, maxAge time.Duration) ([]store.QueueRow, error) {
+	rows, err := q.Queue.ClaimWithAge(ctx, ch, n, token, maxAge)
 	if len(rows) > 0 {
 		q.claims.Add(1)
 	}

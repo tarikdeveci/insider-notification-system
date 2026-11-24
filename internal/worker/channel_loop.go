@@ -177,6 +177,15 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, lb *limit
 		log = log.With("batch_id", *row.BatchID)
 	}
 
+	if row.Expired {
+		// The claim already failed this row for its max delivery age; it holds
+		// no lease, so there is nothing to send, release or write.
+		span.SetStatus(codes.Error, ReasonExpired)
+		log.Warn("claim expired row", "reason", ReasonExpired)
+		e.obs.Failed(ch, ReasonExpired)
+		return
+	}
+
 	brk := e.brk[row.Channel]
 	if mode, _ := brk.gate(); mode == gateNone {
 		// Claimed just before the breaker opened: do not wait for a permit it will not use.
@@ -359,7 +368,7 @@ func (e *Engine) pauseWhileOpen(ctx context.Context, brk *breaker) bool {
 // real duration.
 func (e *Engine) claim(ctx context.Context, ch domain.Channel, n int) ([]store.QueueRow, error) {
 	began := e.now()
-	rows, err := e.q.Claim(ctx, ch, n, newToken())
+	rows, err := e.q.ClaimWithAge(ctx, ch, n, newToken(), e.set.MaxDeliveryAge)
 	if len(rows) == 0 && (err == nil || ctx.Err() != nil) { // idle poll, or cut short by shutdown
 		return rows, err
 	}

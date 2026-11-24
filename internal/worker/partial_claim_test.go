@@ -31,7 +31,7 @@ func (q *partialQueue) claim() ([]store.QueueRow, error) {
 	return nil, nil
 }
 
-func (q *partialQueue) Claim(context.Context, domain.Channel, int, string) ([]store.QueueRow, error) {
+func (q *partialQueue) ClaimWithAge(_ context.Context, _ domain.Channel, _ int, _ string, _ time.Duration) ([]store.QueueRow, error) {
 	return q.claim()
 }
 

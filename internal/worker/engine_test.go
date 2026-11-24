@@ -49,11 +49,11 @@ type recQueue struct {
 	claims []int
 }
 
-func (q *recQueue) Claim(ctx context.Context, ch domain.Channel, n int, token string) ([]store.QueueRow, error) {
+func (q *recQueue) ClaimWithAge(ctx context.Context, ch domain.Channel, n int, token string, maxAge time.Duration) ([]store.QueueRow, error) {
 	q.mu.Lock()
 	q.claims = append(q.claims, n)
 	q.mu.Unlock()
-	return q.Queue.Claim(ctx, ch, n, token)
+	return q.Queue.ClaimWithAge(ctx, ch, n, token, maxAge)
 }
 
 func (q *recQueue) ns() []int {
@@ -239,7 +239,7 @@ func testRedis(t *testing.T) *redis.Client {
 // fakeQueue is a Queue whose Claim is scripted; every other method succeeds.
 type fakeQueue struct{ onClaim func() []store.QueueRow }
 
-func (f *fakeQueue) Claim(context.Context, domain.Channel, int, string) ([]store.QueueRow, error) {
+func (f *fakeQueue) ClaimWithAge(_ context.Context, _ domain.Channel, _ int, _ string, _ time.Duration) ([]store.QueueRow, error) {
 	return f.onClaim(), nil
 }
 func (f *fakeQueue) StartAttempt(context.Context, string, string) (int, time.Time, error) {

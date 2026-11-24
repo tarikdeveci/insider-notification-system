@@ -42,14 +42,28 @@ type QueueRow struct {
 	CorrelationID string
 	LeaseToken    string
 	TraceParent   string // W3C traceparent stored by the API; empty when none
+	// Expired is set when the claim failed the row for its max delivery age
+	// instead of leasing it: the worker must count it and must not send it.
+	Expired bool
 }
 
-// ClaimSQL is the per priority claim probe: $1 channel, $2 priority, $3 limit, $4 lease token.
+// claimExpired is true for a row past the max delivery age ($5 seconds, 0
+// disables the check), counted from scheduled_at when set, else created_at.
+const claimExpired = `($5::float8 > 0 AND now() >= COALESCE(scheduled_at, created_at) + make_interval(secs => $5::float8))`
+
+// ClaimSQL is the per priority claim probe: $1 channel, $2 priority, $3 limit,
+// $4 lease token, $5 max delivery age in seconds (0: no age check), $6 the
+// last_error text of an expired row. A row past the age is failed as expired by
+// this same statement instead of being leased, so it is never sent; it comes
+// back with expired = true and no lease token.
 // Exported so the R8 plan test can EXPLAIN the exact statement the worker runs.
 const ClaimSQL = `
 UPDATE notifications
-SET status = 'processing', lease_token = $4::uuid,
-    locked_until = now() + interval '30 seconds', updated_at = now()
+SET status = CASE WHEN ` + claimExpired + ` THEN 'failed' ELSE 'processing' END,
+    lease_token = CASE WHEN ` + claimExpired + ` THEN NULL ELSE $4::uuid END,
+    locked_until = CASE WHEN ` + claimExpired + ` THEN NULL ELSE now() + interval '30 seconds' END,
+    last_error = CASE WHEN ` + claimExpired + ` THEN $6::text ELSE last_error END,
+    updated_at = now()
 WHERE id IN (
   SELECT id FROM notifications
   WHERE status = 'pending' AND channel = $1 AND priority = $2
@@ -58,22 +72,31 @@ WHERE id IN (
   LIMIT $3
   FOR UPDATE SKIP LOCKED)
 RETURNING id::text, batch_id::text, channel, recipient, content, priority, attempts, max_attempts,
-          next_attempt_at, created_at, scheduled_at, correlation_id, lease_token::text, COALESCE(trace_parent, '')`
+          next_attempt_at, created_at, scheduled_at, correlation_id, COALESCE(lease_token::text, ''),
+          COALESCE(trace_parent, ''), status = 'failed'`
 
 // Claim probes priority 0, then 1, then 2 (each probe is the spec SQL with
 // $2 = that priority and $3 = rows still needed), stops once n rows are
 // claimed, and returns rows sorted by (priority, next_attempt_at, id).
 // n < 1 returns nil, nil. token is a uuid string, fresh per Claim call.
+// Claim applies no age check; the worker uses ClaimWithAge.
 // When a later probe fails, the rows earlier probes already moved to
 // processing are returned together with the error: the caller owns them and
 // must process or release them.
 func (s *Store) Claim(ctx context.Context, ch domain.Channel, n int, token string) ([]QueueRow, error) {
+	return s.ClaimWithAge(ctx, ch, n, token, 0)
+}
+
+// ClaimWithAge is Claim with the max delivery age check: rows past maxAge are
+// failed as expired by the claim itself and returned with Expired set (they
+// hold no lease and count toward n). maxAge <= 0 disables the check.
+func (s *Store) ClaimWithAge(ctx context.Context, ch domain.Channel, n int, token string, maxAge time.Duration) ([]QueueRow, error) {
 	if n < 1 {
 		return nil, nil
 	}
 	var out []QueueRow
 	for prio := domain.PriorityHigh; prio <= domain.PriorityLow && len(out) < n; prio++ {
-		rows, err := s.pool.Query(ctx, ClaimSQL, string(ch), int16(prio), n-len(out), token)
+		rows, err := s.pool.Query(ctx, ClaimSQL, string(ch), int16(prio), n-len(out), token, max(maxAge, 0).Seconds(), reapErrExpired)
 		if err != nil {
 			return sortClaimed(out), fmt.Errorf("claim: %w", err)
 		}
@@ -84,7 +107,7 @@ func (s *Store) Claim(ctx context.Context, ch domain.Channel, n int, token strin
 				priority int16
 			)
 			if err := rows.Scan(&r.ID, &r.BatchID, &channel, &r.Recipient, &r.Content, &priority, &r.Attempts,
-				&r.MaxAttempts, &r.NextAttemptAt, &r.CreatedAt, &r.ScheduledAt, &r.CorrelationID, &r.LeaseToken, &r.TraceParent); err != nil {
+				&r.MaxAttempts, &r.NextAttemptAt, &r.CreatedAt, &r.ScheduledAt, &r.CorrelationID, &r.LeaseToken, &r.TraceParent, &r.Expired); err != nil {
 				rows.Close()
 				return sortClaimed(out), fmt.Errorf("claim scan: %w", err)
 			}

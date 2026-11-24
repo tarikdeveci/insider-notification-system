@@ -22,7 +22,8 @@ import (
 
 // Queue is the slice of *store.Store the engine uses.
 type Queue interface {
-	Claim(ctx context.Context, ch domain.Channel, n int, token string) ([]store.QueueRow, error)
+	// ClaimWithAge fails rows past maxAge as expired in the claim itself (store.QueueRow.Expired).
+	ClaimWithAge(ctx context.Context, ch domain.Channel, n int, token string, maxAge time.Duration) ([]store.QueueRow, error)
 	StartAttempt(ctx context.Context, id, token string) (attempt int, startedAt time.Time, err error)
 	FinishAttempt(ctx context.Context, p store.FinishParams) error
 	Release(ctx context.Context, id, token string, delay time.Duration) error

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -86,9 +87,9 @@ type countingQueue struct {
 	onClaim func()
 }
 
-func (q countingQueue) Claim(ctx context.Context, ch domain.Channel, n int, token string) ([]store.QueueRow, error) {
+func (q countingQueue) ClaimWithAge(ctx context.Context, ch domain.Channel, n int, token string, maxAge time.Duration) ([]store.QueueRow, error) {
 	q.onClaim()
-	return q.Queue.Claim(ctx, ch, n, token)
+	return q.Queue.ClaimWithAge(ctx, ch, n, token, maxAge)
 }
 
 func TestProviderRequestCarriesProviderSendTraceparent(t *testing.T) {

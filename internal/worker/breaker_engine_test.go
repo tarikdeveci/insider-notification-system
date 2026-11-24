@@ -41,7 +41,7 @@ type brkQueue struct {
 	startFn  func(ctx context.Context) error // scripted StartAttempt failure; nil means succeed
 }
 
-func (q *brkQueue) Claim(_ context.Context, _ domain.Channel, n int, _ string) ([]store.QueueRow, error) {
+func (q *brkQueue) ClaimWithAge(_ context.Context, _ domain.Channel, n int, _ string, _ time.Duration) ([]store.QueueRow, error) {
 	q.mu.Lock()
 	q.claims = append(q.claims, n)
 	q.mu.Unlock()

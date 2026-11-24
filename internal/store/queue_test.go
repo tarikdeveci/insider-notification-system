@@ -765,3 +765,63 @@ func TestMaxDeliveryAgeUsesScheduledAt(t *testing.T) {
 		t.Fatalf("status %s", st.status)
 	}
 }
+
+// A pending row past the max delivery age must not be sent: the claim fails it
+// as expired in the same statement and hands it back marked, without a lease.
+// The age runs from scheduled_at when set, so a row scheduled for later is not
+// expired by its old created_at. Claim (no age) never expires a row.
+func TestClaimWithAgeFailsExpiredPendingRows(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	old := mustCreate(t, s, domain.ChannelSMS, "old")
+	fresh := mustCreate(t, s, domain.ChannelSMS, "fresh")
+	sched := mustCreate(t, s, domain.ChannelSMS, "scheduled")
+	if _, err := pool.Exec(ctx, `UPDATE notifications SET created_at = now() - interval '25 hours' WHERE id = ANY($1::uuid[])`,
+		[]string{old.ID, sched.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE notifications SET scheduled_at = now() - interval '1 hour' WHERE id = $1::uuid`, sched.ID); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := s.Claim(ctx, domain.ChannelEmail, 10, newToken(t, pool)); err != nil || len(rows) != 0 {
+		t.Fatalf("other channel claim: %v %d", err, len(rows))
+	}
+
+	rows, err := s.ClaimWithAge(ctx, domain.ChannelSMS, 10, newToken(t, pool), 24*time.Hour)
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("claim: %v %d", err, len(rows))
+	}
+	byID := map[string]store.QueueRow{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	if r := byID[old.ID]; !r.Expired || r.LeaseToken != "" {
+		t.Fatalf("old row: expired=%v lease=%q, want expired with no lease", r.Expired, r.LeaseToken)
+	}
+	for _, id := range []string{fresh.ID, sched.ID} {
+		if r := byID[id]; r.Expired || r.LeaseToken == "" {
+			t.Fatalf("row %s: expired=%v lease=%q, want a live claim", id, r.Expired, r.LeaseToken)
+		}
+		if st := state(t, pool, id); st.status != "processing" {
+			t.Fatalf("row %s status %s, want processing", id, st.status)
+		}
+	}
+	st := state(t, pool, old.ID)
+	if st.status != "failed" || st.lease != nil || st.locked != nil || st.attempts != 0 ||
+		st.lastErr == nil || *st.lastErr != "expired: max delivery age reached" {
+		t.Fatalf("old row state: %+v", st)
+	}
+}
+
+func TestClaimWithoutAgeNeverExpires(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	old := mustCreate(t, s, domain.ChannelSMS, "old")
+	if _, err := pool.Exec(ctx, `UPDATE notifications SET created_at = now() - interval '400 days' WHERE id = $1::uuid`, old.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Claim(ctx, domain.ChannelSMS, 1, newToken(t, pool))
+	if err != nil || len(rows) != 1 || rows[0].Expired {
+		t.Fatalf("claim: %v %+v", err, rows)
+	}
+}
