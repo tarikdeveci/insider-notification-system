@@ -22,8 +22,8 @@ func (f fakePinger) Ping(context.Context) error { return f.err }
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewJSONHandler(io.Discard, nil)) }
 
-func newHealthServer(pg, rd error) http.Handler {
-	return api.NewServer(api.Deps{DB: fakePinger{pg}, Redis: fakePinger{rd}, Logger: discardLogger()})
+func newHealthServer(pg error) http.Handler {
+	return api.NewServer(api.Deps{DB: fakePinger{pg}, Logger: discardLogger()})
 }
 
 func do(h http.Handler, method, path string, hdr map[string]string) *httptest.ResponseRecorder {
@@ -41,18 +41,18 @@ func get(h http.Handler, path string, hdr map[string]string) *httptest.ResponseR
 }
 
 func TestHealthz(t *testing.T) {
-	rr := get(newHealthServer(nil, nil), "/healthz", nil)
+	rr := get(newHealthServer(nil), "/healthz", nil)
 	if rr.Code != 200 {
 		t.Fatalf("code %d", rr.Code)
 	}
 }
 
 func TestReadyz(t *testing.T) {
-	rr := get(newHealthServer(nil, nil), "/readyz", nil)
+	rr := get(newHealthServer(nil), "/readyz", nil)
 	if rr.Code != 200 {
 		t.Fatalf("ready: %d %s", rr.Code, rr.Body)
 	}
-	rr = get(newHealthServer(nil, errors.New("down")), "/readyz", nil)
+	rr = get(newHealthServer(errors.New("down")), "/readyz", nil)
 	var body struct {
 		Status string            `json:"status"`
 		Checks map[string]string `json:"checks"`
@@ -60,13 +60,13 @@ func TestReadyz(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if rr.Code != 503 || body.Status != "degraded" || body.Checks["redis"] != "fail" || body.Checks["postgres"] != "ok" {
+	if rr.Code != 503 || body.Status != "degraded" || body.Checks["postgres"] != "fail" || len(body.Checks) != 1 {
 		t.Fatalf("degraded: %d %+v", rr.Code, body)
 	}
 }
 
 func TestRequestIDEchoedGeneratedAndSanitized(t *testing.T) {
-	h := newHealthServer(nil, nil)
+	h := newHealthServer(nil)
 	if got := get(h, "/healthz", map[string]string{"X-Request-ID": "abc-123"}).Header().Get("X-Request-ID"); got != "abc-123" {
 		t.Errorf("echo: %q", got)
 	}
@@ -127,7 +127,7 @@ func TestAccessLogHasNoQueryString(t *testing.T) {
 }
 
 func TestUnknownPathIsProblem404(t *testing.T) {
-	rr := get(newHealthServer(nil, nil), "/nope", map[string]string{"X-Request-ID": "rid-404"})
+	rr := get(newHealthServer(nil), "/nope", map[string]string{"X-Request-ID": "rid-404"})
 	if rr.Code != 404 || !strings.HasPrefix(rr.Header().Get("Content-Type"), "application/problem+json") {
 		t.Fatalf("code=%d ct=%s", rr.Code, rr.Header().Get("Content-Type"))
 	}
@@ -141,7 +141,7 @@ func TestUnknownPathIsProblem404(t *testing.T) {
 }
 
 func TestWrongMethodIsProblem405WithAllow(t *testing.T) {
-	rr := do(newHealthServer(nil, nil), "POST", "/healthz", map[string]string{"X-Request-ID": "rid-405"})
+	rr := do(newHealthServer(nil), "POST", "/healthz", map[string]string{"X-Request-ID": "rid-405"})
 	if rr.Code != 405 || !strings.HasPrefix(rr.Header().Get("Content-Type"), "application/problem+json") {
 		t.Fatalf("code=%d ct=%s", rr.Code, rr.Header().Get("Content-Type"))
 	}

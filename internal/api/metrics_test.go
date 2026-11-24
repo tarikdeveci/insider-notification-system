@@ -18,7 +18,7 @@ func newMetricsAPI(t *testing.T) http.Handler {
 	t.Helper()
 	pool := testutil.MigratedPool(t)
 	m := observability.NewAPIMetrics(prometheus.NewRegistry())
-	return api.NewServer(api.Deps{Store: store.New(pool), DB: pool, Redis: fakePinger{}, Logger: discardLogger(), Metrics: m})
+	return api.NewServer(api.Deps{Store: store.New(pool), DB: pool, Logger: discardLogger(), Metrics: m})
 }
 
 func metricsBody(t *testing.T, h http.Handler) string {

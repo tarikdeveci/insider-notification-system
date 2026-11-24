@@ -12,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/redis/go-redis/v9"
 
 	"github.com/tarikdeveci/insider-notification-system/internal/api"
 	"github.com/tarikdeveci/insider-notification-system/internal/config"
@@ -58,19 +57,6 @@ func run() int {
 	}
 	defer pool.Close()
 
-	opt, err := redis.ParseURL(cfg.RedisURL)
-	if err != nil {
-		log.Error("invalid REDIS_URL", observability.ErrAttrs(err)...)
-		return 1
-	}
-	opt.PoolSize = cfg.RedisPoolSize
-	rdb := redis.NewClient(opt)
-	defer func() {
-		if err := rdb.Close(); err != nil {
-			log.Error("close redis client", observability.ErrAttrs(err)...)
-		}
-	}()
-
 	st := store.New(pool)
 	reg := prometheus.NewRegistry()
 	metrics := observability.NewAPIMetrics(reg)
@@ -79,7 +65,6 @@ func run() int {
 	handler := api.NewServer(api.Deps{
 		Store:   st,
 		DB:      pool,
-		Redis:   api.RedisPinger{Client: rdb},
 		Logger:  log,
 		Metrics: metrics,
 	})
