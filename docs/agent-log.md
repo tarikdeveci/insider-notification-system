@@ -229,3 +229,44 @@ Preflight rulings (PF17 to PF23):
 ### CP3 gate
 
 Gate: passed at commit 9c760c9 on a clean tree, 24 Nov morning, well before the 20:00 tier 3 deadline. `make test` (with -race): all 13 packages ok. `make lint`: 0 issues. `make e2e`: API phase ok (21s), engine phase ok (279s, `TestRateSmoke` included), stack torn down.
+
+## CP4: tracing, load test, ADRs, final checks (Task 29 and the final phase)
+
+Tarık asked for real parallelism on 24 Nov, so independent work ran in separate git worktrees (`ns-tracing`, `ns-minors`, `ns-docs`, `ns-load`), each on its own branch, and the controller reviewed every branch before a `--no-ff` merge into `main`. Sonnet implementers did the writing; Codex did the read only reviews.
+
+### Task table
+
+| Task | Subject | Commits | Review r0 | Fix rounds |
+|---|---|---|---|---|
+| 29 | OpenTelemetry tracing across the queue (API, stored trace context, worker, provider `traceparent`, Jaeger profile) | 11e271b, 9f85af7 | spec FAIL, 3 important, 1 minor | 1 |
+| Final | Deferred CP3 minors | 0a5bb2d | controller checked by mutation | 0 |
+| Final | ADRs 0001 to 0008 | 72dbb16 | controller spot checked numbers against code | 0 |
+| Final | k6 burst load test, `make load` | e353ab0, 552a4bd | controller read the diff | 1 (pinned the k6 image) |
+
+### Review findings that changed code
+
+- Task 29 I1: an `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` set on its own still created an exporter. Tracing is now off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, with a regression test for the traces only variable.
+- Task 29 I2: a row with an empty or malformed stored context, and every claim, inherited whatever span the caller had. The stored parent is now extracted into a context with the ambient span cleared, and claims start with `trace.WithNewRoot()`.
+- Task 29 I3: the compose profile test skipped on a broken compose file. It now skips only when Docker or Compose is missing and fails on any config error.
+- Task 29 M1: a test now receives the real provider HTTP request and checks that `traceparent` names the active provider span.
+- Found by the implementer: idle claim polls produced one empty span every tick; spans are now only recorded for claims that return rows.
+- Deferred minors: the batch 409 test now also sends a different body that fails the schedule check (mutating the conflict branch to 422 makes it fail), and the reaper subtest now expires the lease so only the status guard protects the row.
+
+Found by the load test agent, not by any review:
+
+- The host had a user level `DATABASE_URL` pointing at a hosted Postgres for another project, and `docker-compose.yml` used `${DATABASE_URL:-...}`, so the compose stack silently used that remote database instead of its own container. Every `make up` and `make e2e` since 23 Nov most likely did the same. The compose file now pins `DATABASE_URL` and `REDIS_URL` to its own containers, guarded by `TestComposeIgnoresHostDatabaseAndRedisURLs` (written red first), and `.env.example` says so (c24626c). The remote data was left untouched pending Tarık's decision.
+
+### Controller rulings
+
+- Correction to the CP3 ruling on `TestRateSmoke`: the diagnosis "host Docker latency" was wrong. The 117ms server side insert and the slow worker were the round trip to the remote database above, not Docker. No review caught it because every reviewer read the code, and the code was right; only the environment was wrong.
+- Task 29 r1 returned `cannot_verify` for missing test output; the controller ran `make test` and `make lint` in the worktree instead of a second review.
+- The ADRs follow the code where the spec drifted: the worker `/readyz` returns 503 when not ready, a permanent result resets the breaker count and a 429 is neutral, `MAX_DELIVERY_AGE` is checked before the attempt budget, and a 3xx is permanent.
+- `make e2e` and `make load` both own ports 8080 and 9090, so they never ran at the same time.
+
+### Environment notes
+
+- Codex `workspace-write` jobs (the minors and the ADRs) hung for 15 to 20 minutes without writing a file on this Windows host. They were stopped; the controller did the minors and a sonnet agent wrote the ADRs. Read only Codex reviews kept working.
+
+### CP4 gate
+
+Gate: passed on `main` at 552a4bd after all four branches were merged. `make test` (with -race): all packages ok, 22s with a warm build cache. `make lint`: 0 issues. `make e2e`: API phase ok (1.6s, was 21s at CP3), engine phase ok (44.7s, was 279s), 86s in total including build and teardown. The speedup is the database fix above, not a code change. Tracing checked live with `make up-tracing`: one sms produced a single trace in Jaeger with `POST /v1/notifications` and `db.insert_notification` from the API and `deliver` and `provider.send` from the worker.
