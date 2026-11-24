@@ -31,6 +31,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required: [status]
                 properties:
                   status:
@@ -465,6 +466,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required: [cancelled]
                 properties:
                   cancelled:
@@ -522,6 +524,7 @@ components:
       enum: [pending, processing, sent, failed, cancelled]
     Readiness:
       type: object
+      additionalProperties: false
       required: [status, checks]
       properties:
         status:
@@ -529,6 +532,7 @@ components:
           enum: [ok, degraded]
         checks:
           type: object
+          additionalProperties: false
           required: [postgres, redis]
           properties:
             postgres:
@@ -597,6 +601,7 @@ components:
             maxLength: 1000
     Notification:
       type: object
+      additionalProperties: false
       required:
         - id
         - batch_id
@@ -617,7 +622,7 @@ components:
         - created_at
         - updated_at
         - sent_at
-      properties:
+      properties: &notificationProperties
         id:
           type: string
           format: uuid
@@ -702,6 +707,7 @@ components:
             braces stays literal.
     Template:
       type: object
+      additionalProperties: false
       required: [id, name, channel, body, created_at]
       properties:
         id:
@@ -719,6 +725,7 @@ components:
           format: date-time
     TemplateList:
       type: object
+      additionalProperties: false
       required: [items]
       properties:
         items:
@@ -728,6 +735,7 @@ components:
             $ref: "#/components/schemas/Template"
     DeliveryAttempt:
       type: object
+      additionalProperties: false
       required: [attempt_no, started_at, finished_at, http_status, error, duration_ms]
       properties:
         attempt_no:
@@ -749,17 +757,42 @@ components:
           type: integer
           nullable: true
     NotificationDetail:
-      allOf:
-        - $ref: "#/components/schemas/Notification"
-        - type: object
-          required: [delivery_attempts]
-          properties:
-            delivery_attempts:
-              type: array
-              items:
-                $ref: "#/components/schemas/DeliveryAttempt"
+      description: |
+        Every Notification field plus delivery_attempts, oldest first. It is
+        written out in full (not allOf) so that additionalProperties false
+        holds on both schemas.
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - batch_id
+        - channel
+        - recipient
+        - content
+        - priority
+        - status
+        - attempts
+        - max_attempts
+        - next_attempt_at
+        - scheduled_at
+        - template_id
+        - template_vars
+        - provider_message_id
+        - last_error
+        - correlation_id
+        - created_at
+        - updated_at
+        - sent_at
+        - delivery_attempts
+      properties:
+        <<: *notificationProperties
+        delivery_attempts:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeliveryAttempt"
     NotificationList:
       type: object
+      additionalProperties: false
       required: [items, next_cursor]
       properties:
         items:
@@ -782,6 +815,7 @@ components:
             $ref: "#/components/schemas/CreateNotificationRequest"
     BatchCreated:
       type: object
+      additionalProperties: false
       required: [batch_id, notification_ids]
       properties:
         batch_id:
@@ -795,6 +829,7 @@ components:
             format: uuid
     BatchSummary:
       type: object
+      additionalProperties: false
       required: [id, total, created_at, counts]
       properties:
         id:
@@ -812,6 +847,7 @@ components:
             type: integer
     Problem:
       type: object
+      additionalProperties: false
       required: [type, title, status]
       properties:
         type:
@@ -829,6 +865,7 @@ components:
           type: array
           items:
             type: object
+            additionalProperties: false
             required: [field, message]
             properties:
               index:
