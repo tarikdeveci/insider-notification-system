@@ -80,7 +80,8 @@ func run() int {
 	// The client error never contains the URL (it carries the webhook id).
 	reg := prometheus.NewRegistry()
 	metrics := observability.NewWorkerMetrics(reg)
-	prov, err := provider.NewClient(cfg.ProviderURL, provider.WithLogger(log), provider.WithUnparsedCounter(metrics.UnparsedBody()))
+	// One sender pool per channel (sms, email, push) shares the provider host.
+	prov, err := provider.NewClient(cfg.ProviderURL, provider.WithLogger(log), provider.WithUnparsedCounter(metrics.UnparsedBody()), provider.WithMaxConns(3*cfg.WorkerConcurrency))
 	if err != nil {
 		log.Error("invalid PROVIDER_URL: " + err.Error())
 		return 1

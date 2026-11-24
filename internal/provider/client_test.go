@@ -142,6 +142,28 @@ func TestClientConnRefused(t *testing.T) {
 	}
 }
 
+func TestClientUsesDedicatedTransportSizedFromConcurrency(t *testing.T) {
+	c := newTestClient(t, "http://127.0.0.1:1/", WithMaxConns(30))
+	tr, ok := c.http.Transport.(*http.Transport)
+	if !ok || tr == http.DefaultTransport {
+		t.Fatalf("want a dedicated *http.Transport, got %T", c.http.Transport)
+	}
+	if tr.MaxIdleConnsPerHost != 30 || tr.MaxIdleConns < 30 {
+		t.Fatalf("idle conns per host %d, total %d", tr.MaxIdleConnsPerHost, tr.MaxIdleConns)
+	}
+	if c.http.CheckRedirect == nil {
+		t.Fatal("redirects must stay disabled")
+	}
+}
+
+func TestClientDefaultTransportIsSizedAboveStdlibDefault(t *testing.T) {
+	c := newTestClient(t, "http://127.0.0.1:1/")
+	tr, ok := c.http.Transport.(*http.Transport)
+	if !ok || tr.MaxIdleConnsPerHost <= http.DefaultMaxIdleConnsPerHost {
+		t.Fatalf("default sizing too small: %T %+v", c.http.Transport, tr)
+	}
+}
+
 func TestClientDoesNotFollowRedirects(t *testing.T) {
 	var hits atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
