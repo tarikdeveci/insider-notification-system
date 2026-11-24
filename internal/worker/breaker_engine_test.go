@@ -257,6 +257,7 @@ type probeHarness struct {
 	q       *brkQueue
 	obs     *recObserver
 	healthy *atomic.Bool
+	eng     *worker.Engine
 	run     *running
 }
 
@@ -270,8 +271,9 @@ func newProbeHarness(t *testing.T) *probeHarness {
 		}
 		return retryableSender(ctx, m)
 	})
-	h.run = start(t, worker.New(h.q, sender, okLimiter, breakerSettings(1),
-		worker.WithRand(zeroRand), worker.WithClock(h.clk.now), worker.WithObserver(h.obs), worker.WithChannels(domain.ChannelSMS)))
+	h.eng = worker.New(h.q, sender, okLimiter, breakerSettings(1),
+		worker.WithRand(zeroRand), worker.WithClock(h.clk.now), worker.WithObserver(h.obs), worker.WithChannels(domain.ChannelSMS))
+	h.run = start(t, h.eng)
 	waitFor(t, "open", func() bool { return slices.Contains(h.obs.stateList(), "sms:1") })
 	time.Sleep(100 * time.Millisecond) // let rows claimed before the opening settle
 	return h
@@ -308,11 +310,10 @@ func TestProbeAbortedAtStartAttemptErrorFreesSlot(t *testing.T) {
 	h.wantProbeRecovers(t)
 }
 
-// At shutdown the engine ends, so the next probe cannot be observed reliably
-// (the loop may or may not claim once more before it sees the cancel). This
-// checks the path ends cleanly: Run returns and the probe moved the breaker to
-// half open, never straight back to open.
-func TestProbeAbortedAtShutdownEndsWithoutSend(t *testing.T) {
+// The run ctx is cancelled while the probe is admitted and inside StartAttempt.
+// Once Run has returned, the same breaker must have a free probe slot: a leaked
+// slot (no abort on the shutdown path) makes ProbeSlotFree report false.
+func TestProbeAbortedAtShutdownFreesSlot(t *testing.T) {
 	h := newProbeHarness(t)
 	h.halfOpenWith(t, func(context.Context) error {
 		h.run.cancel()
@@ -322,5 +323,8 @@ func TestProbeAbortedAtShutdownEndsWithoutSend(t *testing.T) {
 	got := h.obs.stateList()
 	if len(got) < 2 || got[0] != "sms:1" || got[1] != "sms:2" || slices.Contains(got[2:], "sms:1") {
 		t.Fatalf("states = %v, want open then half open, and no reopening", got)
+	}
+	if !h.eng.ProbeSlotFree(domain.ChannelSMS) {
+		t.Fatal("probe slot still held after shutdown aborted the probe")
 	}
 }
