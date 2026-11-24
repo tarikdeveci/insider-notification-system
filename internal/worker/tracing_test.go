@@ -40,7 +40,7 @@ func postThenDeliver(t *testing.T, rewriteTraceParent string) tracedRun {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 
-	h := api.NewServer(api.Deps{Store: e.st, DB: e.pool, Redis: nopPinger{}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), TracerProvider: tp})
+	h := api.NewServer(api.Deps{Store: e.st, DB: e.pool, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), TracerProvider: tp})
 	body := fmt.Sprintf(`{"recipient":%q,"channel":"sms","content":%q}`, traceRecipient, traceContent)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("POST", "/v1/notifications", strings.NewReader(body)))
@@ -75,10 +75,6 @@ func postThenDeliver(t *testing.T, rewriteTraceParent string) tracedRun {
 	defer mu.Unlock()
 	return tracedRun{spans: rec.Ended(), id: id, sendSpan: seen}
 }
-
-type nopPinger struct{}
-
-func (nopPinger) Ping(context.Context) error { return nil }
 
 func find(spans []sdktrace.ReadOnlySpan, name string) sdktrace.ReadOnlySpan {
 	for _, s := range spans {

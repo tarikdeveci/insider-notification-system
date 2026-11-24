@@ -20,11 +20,8 @@ type Pinger interface {
 
 // Deps are the collaborators the handlers need.
 type Deps struct {
-	Store *store.Store
-	DB    Pinger
-	// Redis is ignored: API readiness depends on Postgres only. The field stays
-	// until internal/worker/tracing_test.go stops setting it, then it is removed.
-	Redis  Pinger
+	Store  *store.Store
+	DB     Pinger
 	Logger *slog.Logger
 	// Metrics is optional; nil disables instrumentation and makes /metrics a 404.
 	Metrics *observability.APIMetrics
