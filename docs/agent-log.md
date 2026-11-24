@@ -168,3 +168,64 @@ Preflight rulings (PF9 to PF16):
 ### CP2 gate
 
 Gate: passed at commit 3ac38ea on a clean tree. `make test` (with -race): all 12 packages ok. `make lint`: 0 issues. `make e2e`: API phase ok (4s), engine phase ok (257s), stack torn down, no containers left.
+
+## CP3: CI, scheduled sends, manual retry, circuit breaker, templates, OpenAPI validation (Tasks 23 to 28)
+
+Same roles and per-task loop. Before Task 24, the controller wrote CP3 preflight rulings (PF17 to PF23) so that tasks sharing the request hash, the read model and the route table could not drift apart. On 24 Nov, Tarık asked for more parallelism: Task 28 then ran on `main` while the tier 3 tracing task and two documentation and test jobs ran in separate git worktrees, each reviewed before merge.
+
+### Task table
+
+| Task | Subject | Commits | Review r0 | Fix rounds |
+|---|---|---|---|---|
+| 23 | GitHub Actions CI (lint, test, e2e) | 1f4785e, 80fb344 | spec FAIL, 2 important | 1 (80fb344), second finding answered with evidence |
+| 24 | Scheduled notifications | c10a49b | PASS, 1 minor | 0 |
+| 25 | Manual retry endpoint | 86bc0bc | PASS, 1 minor | 0 |
+| 26 | Per channel circuit breaker | 1fdd83c, 0fde5ff, 4f01858 | spec FAIL, 1 important | 2 |
+| 27 | Templates (migration 0002, rendering, endpoints) | bdd10ce, 16195d5 | spec FAIL, 1 important, 2 minor | 1 |
+| 28 | OpenAPI completion, responses validated against the spec | 9c760c9 | PASS, APPROVED | 0 |
+
+### Review findings that changed code
+
+- Task 23: the lint action was one major version behind (`@v8`); checkout, setup-go and golangci-lint-action were moved to their current majors after the controller verified the tags exist (80fb344).
+- Task 26: the probe abort test failed on the limiter before the breaker admitted a probe, so it never exercised the abort path. New engine tests admit a probe and then lose the lease, hit an infrastructure error, or shut down, and each proves the probe slot is freed. Removing `defer tk.abort()` makes all three fail (0fde5ff, 4f01858). The first fix round left the shutdown case unproven; the second review caught it.
+- Task 27: `"template_vars": {}` without `template_id` passed validation because the check was `len(...) > 0`. Now any non nil map without an id is a 422, with single and batch regression tests written red first (16195d5).
+
+Found by the implementer, not by review:
+
+- Task 26: a Claim could still run after the breaker opened between the gate check and `takeSlots`; the gate is now checked again after slots are taken.
+- Task 24: the scheduled e2e test sent a `+` in a query string unescaped, so the lookup missed the row.
+
+### Controller rulings
+
+- Task 23: `TestRateSmoke` failed twice in the first CI run. Diagnosis: host Docker latency (API single insert about 117ms server side, worker about 16/s, provider 9ms, limiter 21ms, in-container Postgres commit 4ms). The test passes alone (225s) and in every full e2e run since. Accepted as an environment property, not a defect; implementers rerun it alone once if only it fails.
+- Task 23: the fix round was a three line version bump, so the controller verified it instead of a second Codex run.
+- Task 26: the breaker is per replica (spec section 15, ADR 0006). Shared state in Redis is the next step.
+- Task 27: the implementer reported partial TDD evidence (renderer tests written together with the code). Recorded as a process deviation; the fix round had to show red output first.
+- Tier 3 decision (Tarık, 24 Nov, at the CP3 gate): tracing only, WebSocket dropped. Reasons: the safe version needs connection caps, an origin check, bounded per client buffers and write deadlines (review item S8), and the remaining time is worth more in load testing, a fresh clone test and the README.
+
+Preflight rulings (PF17 to PF23):
+
+- PF17: the request hash stays backward compatible: new fields are `omitempty`, `scheduled_at` hashes as UTC RFC3339Nano, `template_vars` as a JSON object; the hash never covers rendered content.
+- PF18: field format errors are 422; the schedule window check runs only for new inserts with an injectable clock, and a failing check with an Idempotency-Key first tries replay (same hash 200, other hash 409, no row 422).
+- PF19: the read model gains `scheduled_at`, `template_id` and `template_vars`, always present and null when unset.
+- PF20: manual retry is one conditional UPDATE from `failed` to `pending` with attempts reset; `last_error` and `scheduled_at` are kept.
+- PF21: breaker semantics: only Retryable counts, Success and Permanent reset, Throttled does neither; half open admits exactly one probe; open releases claimed unstarted rows without using an attempt.
+- PF22: unknown template and channel mismatch are 422 on `template_id`; a duplicate template name is 409; the template list is bounded.
+- PF23: a task that adds a route changes `routes()` and `api/openapi.yaml` in the same commit.
+
+### Deferred minor findings
+
+- Task 24: the batch 409 replay test changed the batch so it no longer reached `batchScheduleRejected`. Fixed after the gate in a separate test commit.
+- Task 25: the concurrent reaper subtest used a lease in the future, so lease expiry alone excluded the row. Fixed after the gate in the same test commit.
+- Task 27: the report summarizes passing gates without pasting their output.
+- Task 28: the 405 and unmatched route 404 problem responses are not spec paths, so they are not sampled.
+
+### Environment notes
+
+- Docker Desktop hung three more times (Task 24 e2e, Task 26 `make test`, start of 24 Nov). The same recovery worked each time: quit Docker, `wsl --shutdown`, rename `%LOCALAPPDATA%\Docker\run`, start Docker.
+- A background implementer was lost when its session ended overnight; its fix round had not been written, so a new implementer redid it from the review file.
+- One `internal/api` run hit a transient testcontainers reaper error ("container status removing"); the rerun passed.
+
+### CP3 gate
+
+Gate: passed at commit 9c760c9 on a clean tree, 24 Nov morning, well before the 20:00 tier 3 deadline. `make test` (with -race): all 13 packages ok. `make lint`: 0 issues. `make e2e`: API phase ok (21s), engine phase ok (279s, `TestRateSmoke` included), stack torn down.
