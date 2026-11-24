@@ -56,6 +56,8 @@ func (s *server) createTemplate(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(req.Name)
 	if n := utf8.RuneCountInString(name); n < 1 || n > maxTemplateName {
 		bad("name", "must be 1 to 100 characters")
+	} else if domain.HasControl(name, false) {
+		bad("name", "must not contain control characters")
 	}
 	ch := domain.Channel(req.Channel)
 	if !ch.Valid() {
@@ -63,6 +65,8 @@ func (s *server) createTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	if n := utf8.RuneCountInString(req.Body); n < 1 || n > maxTemplateText {
 		bad("body", "must be 1 to 10000 characters")
+	} else if domain.HasControl(req.Body, true) {
+		bad("body", "must not contain control characters")
 	} else if _, err := tpl.Parse(req.Body); err != nil {
 		bad("body", err.Error())
 	} else if ch.Valid() && tpl.LiteralRunes(req.Body) > domain.ContentLimit(ch) {

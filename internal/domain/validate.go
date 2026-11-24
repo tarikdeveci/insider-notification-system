@@ -109,6 +109,8 @@ func (r CreateRequest) Validate() (NewNotification, []FieldError) {
 
 	if r.Recipient == "" {
 		add("recipient", "is required")
+	} else if HasControl(r.Recipient, false) {
+		add("recipient", "must not contain control characters")
 	}
 	if !hasTemplate && r.Content != "" {
 		if msg := contentProblem(ch, chOK, r.Content); msg != "" {
@@ -161,7 +163,7 @@ func (r CreateRequest) validateVars(add func(field, msg string)) map[string]stri
 	if len(r.TemplateVars) > MaxTemplateVars {
 		add("template_vars", "must have at most 50 entries")
 	}
-	badKey, longValue := false, false
+	badKey, longValue, ctrlValue := false, false, false
 	for k, v := range r.TemplateVars {
 		if !template.ValidName(k) {
 			badKey = true
@@ -169,6 +171,12 @@ func (r CreateRequest) validateVars(add func(field, msg string)) map[string]stri
 		if utf8.RuneCountInString(v) > MaxTemplateVarRunes {
 			longValue = true
 		}
+		if HasControl(v, true) {
+			ctrlValue = true
+		}
+	}
+	if ctrlValue {
+		add("template_vars", "values must not contain control characters")
 	}
 	if badKey {
 		add("template_vars", "names must match [A-Za-z_][A-Za-z0-9_]*")
@@ -204,6 +212,9 @@ func contentProblem(ch Channel, chOK bool, content string) string {
 	}
 	if chOK && utf8.RuneCountInString(content) > contentLimit(ch) {
 		return "exceeds the limit for this channel"
+	}
+	if HasControl(content, true) {
+		return "must not contain control characters"
 	}
 	return ""
 }
@@ -300,3 +311,20 @@ func BatchHash(items []NewNotification) string {
 
 // IsUUID reports whether s is a canonical textual UUID.
 func IsUUID(s string) bool { return uuidRe.MatchString(s) }
+
+// HasControl reports whether s holds a C0 control character (U+0000 to
+// U+001F). Newline and tab are tolerated when allowNLTab is set. Postgres
+// text and jsonb reject NUL, and the other controls have no place in a
+// message or an address.
+func HasControl(s string, allowNLTab bool) bool {
+	for _, r := range s {
+		if r >= 0x20 {
+			continue
+		}
+		if allowNLTab && (r == '\n' || r == '\t') {
+			continue
+		}
+		return true
+	}
+	return false
+}

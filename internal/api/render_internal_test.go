@@ -73,6 +73,20 @@ func TestCreateTemplateRejectsBodyThatCanNeverFitChannel(t *testing.T) {
 	}
 }
 
+func TestCreateTemplateRejectsNUL(t *testing.T) {
+	h := NewServer(Deps{Logger: discardLog()})
+	for _, body := range []string{
+		`{"name":"n","channel":"email","body":"a\u0000b"}`,
+		`{"name":"n\u0000","channel":"email","body":"ab"}`,
+	} {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest("POST", "/v1/templates", strings.NewReader(body)))
+		if rr.Code != 422 || !strings.Contains(rr.Body.String(), "control characters") {
+			t.Fatalf("%d %s", rr.Code, rr.Body)
+		}
+	}
+}
+
 func TestCreateTemplateRejectsTooManyPlaceholders(t *testing.T) {
 	h := NewServer(Deps{Logger: discardLog()})
 	body := `{"name":"n","channel":"email","body":"` + strings.Repeat("{{a}}", 101) + `"}`
