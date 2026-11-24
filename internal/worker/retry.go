@@ -9,8 +9,9 @@ import (
 	"github.com/tarikdeveci/insider-notification-system/internal/provider"
 )
 
-// Failure reasons stored in notifications.failure_reason and used as the
-// `reason` label of notifications_failed_total.
+// Failure reasons: the worker prefixes notifications.last_error with them
+// ("<reason>: <error>") and they are the `reason` label of
+// notifications_failed_total.
 const (
 	ReasonPermanent = "permanent"
 	ReasonExhausted = "exhausted"
