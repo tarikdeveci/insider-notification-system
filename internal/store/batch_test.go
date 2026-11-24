@@ -129,3 +129,39 @@ func TestGetBatchCounts(t *testing.T) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
+
+// Counts and total come from one statement, so they always describe the same
+// snapshot: while rows change status the counts keep adding up to the total.
+func TestGetBatchCountsMatchTotalWhileRowsMove(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	res, err := s.CreateBatch(ctx, store.CreateBatchParams{Items: batchItems(20), CorrelationID: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, id := range res.IDs {
+			exec(t, pool, `UPDATE notifications SET status='sent' WHERE id=$1::uuid`, id)
+		}
+	}()
+	for running := true; running; {
+		select {
+		case <-done:
+			running = false
+		default:
+		}
+		sum, err := s.GetBatch(ctx, res.BatchID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, c := range sum.Counts {
+			n += c
+		}
+		if n != sum.Total {
+			t.Fatalf("counts add up to %d, total %d", n, sum.Total)
+		}
+	}
+}
