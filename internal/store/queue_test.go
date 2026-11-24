@@ -323,8 +323,8 @@ func TestStaleWorkerCannotWriteResult(t *testing.T) {
 	if !errors.Is(err, store.ErrLeaseLost) {
 		t.Fatalf("stale finish: %v", err)
 	}
-	if n := attemptCount(t, pool, row.ID); n != 0 {
-		t.Fatalf("stale worker wrote %d attempt rows", n)
+	if n := attemptCount(t, pool, row.ID); n != 1 { // the reaper's lease_expired row, nothing from the stale worker
+		t.Fatalf("attempt rows = %d, want only the reaper's lease_expired row", n)
 	}
 	if st := state(t, pool, row.ID); st.status != "processing" || st.lease == nil || *st.lease != newTok {
 		t.Fatalf("row disturbed: %+v", st)
@@ -479,6 +479,75 @@ func TestReleaseWithDelayDefersNextAttempt(t *testing.T) {
 	}
 }
 
+type historyRow struct {
+	seq, attemptNo int
+	errText        string
+}
+
+func history(t *testing.T, pool *pgxpool.Pool, id string) []historyRow {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`SELECT seq, attempt_no, COALESCE(error, '') FROM notification_attempts WHERE notification_id = $1::uuid ORDER BY seq`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []historyRow
+	for rows.Next() {
+		var h historyRow
+		if err := rows.Scan(&h.seq, &h.attemptNo, &h.errText); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+// attempt_no is the notifications.attempts counter at that attempt, so a 429
+// (which refunds the attempt) leaves rows that share it. seq is the unambiguous
+// per notification order, and the reaper records a lost lease as its own row.
+func TestAttemptHistoryHasUnambiguousSequence(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	row, tok := claimOne(t, s, pool)
+	for i := 0; i < 2; i++ { // two throttled attempts share attempt_no 1
+		attempt, started, err := s.StartAttempt(ctx, row.ID, tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = s.FinishAttempt(ctx, store.FinishParams{ID: row.ID, Token: tok, Action: store.FinishRetry, AttemptNo: attempt, StartedAt: started,
+			HTTPStatus: 429, AttemptError: "throttled", NextAttemptAt: time.Now(), GiveBackAttempt: true, LastError: "throttled"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tok = newToken(t, pool)
+		if rows, err := s.Claim(ctx, domain.ChannelSMS, 1, tok); err != nil || len(rows) != 1 {
+			t.Fatalf("reclaim: %v %d", err, len(rows))
+		}
+	}
+	if _, _, err := s.StartAttempt(ctx, row.ID, tok); err != nil { // attempt 1 again, then its lease expires
+		t.Fatal(err)
+	}
+	expireLease(t, pool, row.ID)
+	if _, err := s.Reap(ctx, 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	got := history(t, pool, row.ID)
+	want := []historyRow{{1, 1, "throttled"}, {2, 1, "throttled"}, {3, 1, "lease_expired"}}
+	if len(got) != len(want) {
+		t.Fatalf("history = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("history = %+v, want %+v", got, want)
+		}
+	}
+	attempts, err := s.ListAttempts(ctx, row.ID)
+	if err != nil || len(attempts) != 3 || attempts[2].Error == nil || *attempts[2].Error != "lease_expired" {
+		t.Fatalf("ListAttempts: %v %+v", err, attempts)
+	}
+}
+
 func TestReleaseDoesNotUseAttempt(t *testing.T) {
 	s, pool := newStore(t)
 	ctx := context.Background()
@@ -523,8 +592,11 @@ func TestReaperRequeuesExpiredLeases(t *testing.T) {
 	if st.status != "pending" || st.attempts != 1 || st.lease != nil || st.locked != nil || st.lastErr != nil {
 		t.Fatalf("state: %+v", st)
 	}
-	if n := attemptCount(t, pool, expired.ID); n != 0 {
-		t.Fatalf("reaper wrote attempt rows: %d", n)
+	if n := attemptCount(t, pool, expired.ID); n != 1 {
+		t.Fatalf("reaper must write one lease_expired attempt row, got %d", n)
+	}
+	if n := attemptCount(t, pool, live.ID); n != 0 {
+		t.Fatalf("a live lease got %d attempt rows", n)
 	}
 	if st := state(t, pool, live.ID); st.status != "processing" {
 		t.Fatalf("live lease reaped: %s", st.status)

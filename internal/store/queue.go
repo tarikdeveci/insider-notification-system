@@ -236,18 +236,33 @@ type ReapedRow struct {
 // Reap handles processing rows whose lease expired, in one UPDATE (no token:
 // the predicate itself proves expiry). Rows past max delivery age fail with
 // reason expired, rows with no attempts left fail with reason exhausted, the
-// rest return to pending with next_attempt_at = now(). No attempt row is written.
+// rest return to pending with next_attempt_at = now().
+//
+// A row with attempts > 0 had an attempt in flight when its lease ran out, so the
+// same statement writes a lease_expired history row for it (attempt_no =
+// attempts, started_at = the StartAttempt time kept in updated_at). A row
+// reaped before StartAttempt but after an earlier attempt gets the same row;
+// the history is then a conservative record of a lease that ran out.
 func (s *Store) Reap(ctx context.Context, maxAge time.Duration) ([]ReapedRow, error) {
-	const expired = `now() >= COALESCE(scheduled_at, created_at) + make_interval(secs => $1::float8)`
+	const expired = `now() >= COALESCE(n.scheduled_at, n.created_at) + make_interval(secs => $1::float8)`
 	rows, err := s.pool.Query(ctx,
-		`UPDATE notifications SET
-		   status = CASE WHEN `+expired+` OR attempts >= max_attempts THEN 'failed' ELSE 'pending' END,
-		   last_error = CASE WHEN `+expired+` THEN $2::text
-		                     WHEN attempts >= max_attempts THEN $3::text ELSE last_error END,
-		   next_attempt_at = CASE WHEN `+expired+` OR attempts >= max_attempts THEN next_attempt_at ELSE now() END,
-		   lease_token = NULL, locked_until = NULL, updated_at = now()
-		 WHERE status = 'processing' AND locked_until < now()
-		 RETURNING id::text, channel, status, last_error`,
+		`WITH upd AS (
+		   UPDATE notifications n SET
+		     status = CASE WHEN `+expired+` OR n.attempts >= n.max_attempts THEN 'failed' ELSE 'pending' END,
+		     last_error = CASE WHEN `+expired+` THEN $2::text
+		                       WHEN n.attempts >= n.max_attempts THEN $3::text ELSE n.last_error END,
+		     next_attempt_at = CASE WHEN `+expired+` OR n.attempts >= n.max_attempts THEN n.next_attempt_at ELSE now() END,
+		     lease_token = NULL, locked_until = NULL, updated_at = now()
+		   FROM (SELECT id, attempts, updated_at FROM notifications
+		         WHERE status = 'processing' AND locked_until < now() FOR UPDATE) d
+		   WHERE n.id = d.id AND n.status = 'processing' AND n.locked_until < now()
+		   RETURNING n.id, n.channel, n.status, n.last_error, d.attempts AS old_attempts, d.updated_at AS old_updated_at),
+		 hist AS (
+		   INSERT INTO notification_attempts (notification_id, attempt_no, started_at, finished_at, error, duration_ms)
+		   SELECT id, old_attempts, old_updated_at, now(), 'lease_expired',
+		          GREATEST(0, (extract(epoch FROM (now() - old_updated_at)) * 1000)::int)
+		   FROM upd WHERE old_attempts > 0)
+		 SELECT id::text, channel, status, last_error FROM upd`,
 		maxAge.Seconds(), reapErrExpired, reapErrExhausted)
 	if err != nil {
 		return nil, fmt.Errorf("reap: %w", err)

@@ -24,7 +24,7 @@ func TestMigrateCreatesSchemaAndIsIdempotent(t *testing.T) {
 			"template_id", "template_vars", "priority", "status", "attempts", "max_attempts", "next_attempt_at",
 			"scheduled_at", "locked_until", "lease_token", "batch_position", "provider_message_id", "last_error",
 			"correlation_id", "trace_parent", "created_at", "updated_at", "sent_at"},
-		"notification_attempts": {"id", "notification_id", "attempt_no", "started_at", "finished_at", "http_status", "error", "duration_ms"},
+		"notification_attempts": {"id", "notification_id", "seq", "attempt_no", "started_at", "finished_at", "http_status", "error", "duration_ms"},
 		"batches":               {"id", "idempotency_key", "request_hash", "total", "created_at"},
 	}
 	for table, names := range cols {

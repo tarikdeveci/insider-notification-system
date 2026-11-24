@@ -102,12 +102,14 @@ func (s *Store) GetNotification(ctx context.Context, id string) (domain.Notifica
 	return n, nil
 }
 
-// ListAttempts returns the delivery attempts of a notification in insertion
-// order. The slice is non-nil even when there are none.
+// ListAttempts returns the delivery attempts of a notification in write (seq)
+// order. attempt_no is the notification's attempts counter at write time and
+// can repeat after a 429 refund; seq is the unambiguous order. The slice is
+// non-nil even when there are none.
 func (s *Store) ListAttempts(ctx context.Context, id string) ([]domain.Attempt, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT attempt_no, started_at, finished_at, http_status, error, duration_ms
-		 FROM notification_attempts WHERE notification_id = $1::uuid ORDER BY id`, id)
+		 FROM notification_attempts WHERE notification_id = $1::uuid ORDER BY seq`, id)
 	if err != nil {
 		return nil, fmt.Errorf("list attempts: %w", err)
 	}
