@@ -71,6 +71,18 @@ func TestClassify5xxTimeoutConnError(t *testing.T) {
 	}
 }
 
+func TestClassify408And425AreRetryable(t *testing.T) {
+	for status, code := range map[int]string{408: "provider_408", 425: "provider_425"} {
+		r, _ := classifyAt(fixedNow, status, nil, nil)
+		if r.Class != Retryable || r.ErrCode != code || r.HTTPStatus != status {
+			t.Fatalf("%d: %+v", status, r)
+		}
+	}
+	if r, _ := classifyAt(fixedNow, 429, nil, nil); r.Class != Throttled || r.ErrCode != CodeThrottled {
+		t.Fatalf("429 must stay throttled: %+v", r)
+	}
+}
+
 func TestClassifyOther4xxAnd3xx(t *testing.T) {
 	for _, status := range []int{400, 401, 404, 422} {
 		r, _ := classifyAt(fixedNow, status, nil, nil)

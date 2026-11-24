@@ -45,6 +45,8 @@ const (
 	CodeTimeout          = "provider_timeout"
 	CodeCanceled         = "provider_canceled"
 	CodeConnError        = "provider_conn_error"
+	Code408              = "provider_408"
+	Code425              = "provider_425"
 	Code4xx              = "provider_4xx"
 	Code3xx              = "provider_3xx"
 	CodeUnexpectedStatus = "provider_unexpected_status"
@@ -105,6 +107,10 @@ func classifyAt(now time.Time, status int, header http.Header, body []byte) (Res
 	case status == http.StatusTooManyRequests:
 		res.Class, res.ErrCode = Throttled, CodeThrottled
 		res.RetryAfter = parseRetryAfter(now, header.Get("Retry-After"))
+	case status == http.StatusRequestTimeout:
+		res.Class, res.ErrCode = Retryable, Code408
+	case status == http.StatusTooEarly:
+		res.Class, res.ErrCode = Retryable, Code425
 	case status >= 500 && status <= 599:
 		res.Class, res.ErrCode = Retryable, Code5xx
 	case status >= 400 && status <= 499:
