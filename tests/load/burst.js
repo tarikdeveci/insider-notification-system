@@ -2,9 +2,10 @@
 // spread evenly over sms, email and push with mixed priorities. All data is fake.
 import http from 'k6/http';
 import { check } from 'k6';
+import exec from 'k6/execution';
 import { Counter } from 'k6/metrics';
 
-const BASE = __ENV.BASE_URL || 'http://host.docker.internal:8080';
+const BASE = __ENV.BASE_URL || 'http://localhost:8080';
 const TOTAL = parseInt(__ENV.TOTAL || '10000', 10);
 const BATCH = 1000;
 const BATCHES = Math.ceil(TOTAL / BATCH);
@@ -47,9 +48,9 @@ function item(n) {
 }
 
 export default function () {
-  // __ITER is the global iteration index for shared-iterations, so ranges never overlap.
-  const start = __ITER * BATCH;
-  const end = Math.min(start + BATCH, TOTAL);
+  // iterationInTest is the scenario wide index (__ITER is per VU), so batch ranges never overlap.
+  const start = exec.scenario.iterationInTest * BATCH;
+  const end = start + Math.min(BATCH, TOTAL - start);
   const items = [];
   for (let n = start; n < end; n++) items.push(item(n));
   const res = http.post(`${BASE}/v1/notifications/batch`, JSON.stringify({ notifications: items }), {

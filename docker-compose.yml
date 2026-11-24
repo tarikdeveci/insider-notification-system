@@ -80,6 +80,7 @@ services:
     environment:
       <<: *app-env
       REDIS_URL: redis://redis:6379/0
+      # make e2e and make load force the mock provider here; a shell value beats .env.
       PROVIDER_URL: ${PROVIDER_URL:-http://mock-provider:9090/}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       WORKER_HTTP_ADDR: ":8081"

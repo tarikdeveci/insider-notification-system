@@ -9,9 +9,9 @@ DRAIN_TIMEOUT="${DRAIN_TIMEOUT:-900}"
 MOCK="http://localhost:9090"
 rc=0
 
-# docker-compose.yml pins the database and Redis URLs; PROVIDER_URL is still read from the host,
-# so unset it to make sure the burst only ever hits the local mock provider.
-unset DATABASE_URL REDIS_URL PROVIDER_URL
+# docker-compose.yml pins the database and Redis URLs; PROVIDER_URL is interpolated from the shell or
+# .env, and the shell wins, so force the mock to keep the burst off any real provider.
+export PROVIDER_URL=http://mock-provider:9090/
 
 psql() { docker compose exec -T postgres psql -U notif -d notif -At -F ' ' -c "$1"; }
 
@@ -24,8 +24,10 @@ curl -fsS -X POST "$MOCK/_control/reset" >/dev/null || { echo "provider reset fa
 echo "provider config: $(curl -fsS "$MOCK/_control/config")"
 
 t0=$(date +%s)
-docker run --rm -i --add-host=host.docker.internal:host-gateway \
-  -e TOTAL="$TOTAL" -e BASE_URL=http://host.docker.internal:8080 \
+# Join the api container network namespace: its port is published on 127.0.0.1 only, which a
+# container cannot reach through the host gateway on native Linux.
+docker run --rm -i --network "container:$(docker compose ps -q api)" \
+  -e TOTAL="$TOTAL" -e BASE_URL=http://localhost:8080 \
   grafana/k6:2.4.0 run - < tests/load/burst.js || rc=1
 t1=$(date +%s)
 echo "burst phase: $((t1 - t0))s"
@@ -41,6 +43,9 @@ while :; do
 done
 t2=$(date +%s)
 echo "drain phase: $((t2 - t1))s, total $((t2 - t0))s"
+
+sent=$(psql "SELECT count(*) FROM notifications WHERE status = 'sent'") || { echo "psql failed"; exit 1; }
+if [ "$sent" != "$TOTAL" ]; then echo "delivery check failed: sent=$sent expected=$TOTAL"; rc=1; fi
 
 echo "--- status counts"
 psql "SELECT status, count(*) FROM notifications GROUP BY status ORDER BY status"

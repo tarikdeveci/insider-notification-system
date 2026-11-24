@@ -29,6 +29,8 @@ down:
 e2e: export RETRY_BASE_DELAY=200ms
 e2e: export RETRY_MAX_DELAY=1s
 e2e: export REAPER_INTERVAL=1s
+# Never let a PROVIDER_URL from .env or the shell send e2e traffic to a real provider.
+e2e: export PROVIDER_URL=http://mock-provider:9090/
 e2e:
 	docker compose up -d --build; rc=$$?; \
 	if [ $$rc -eq 0 ]; then docker compose stop worker; rc=$$?; fi; \

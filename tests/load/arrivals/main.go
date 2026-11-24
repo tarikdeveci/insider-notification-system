@@ -1,7 +1,7 @@
 // Command arrivals checks the provider side rate limit of a load run. It reads the mock
 // provider arrival log and fails when any channel has a 1s window above -max-window or an
-// average above -max-avg per second. Windows are sliding: the count of arrivals in
-// [t, t+1s) for every arrival t.
+// average above -max-avg per second, or when a channel has no arrivals at all. Windows are
+// sliding: the count of arrivals in [t, t+1s) for every arrival t.
 package main
 
 import (
@@ -55,7 +55,8 @@ func run(url string, maxWindow int, maxAvg float64) error {
 	for _, ch := range []string{"sms", "email", "push"} {
 		ts := byChannel[ch]
 		if len(ts) == 0 {
-			fmt.Printf("%-5s arrivals=0\n", ch)
+			fmt.Printf("%-5s arrivals=0 FAIL\n", ch)
+			failed = true
 			continue
 		}
 		sort.Slice(ts, func(i, j int) bool { return ts[i].Before(ts[j]) })
@@ -81,7 +82,7 @@ func run(url string, maxWindow int, maxAvg float64) error {
 		fmt.Printf("%-5s arrivals=%d max_1s_window=%d avg_per_s=%.1f span_s=%.1f %s\n", ch, len(ts), maxW, avg, span, verdict)
 	}
 	if failed {
-		return fmt.Errorf("rate limit check failed (max window %d, max avg %.0f/s)", maxWindow, maxAvg)
+		return fmt.Errorf("rate limit check failed (max window %d, max avg %.0f/s, every channel needs arrivals)", maxWindow, maxAvg)
 	}
 	return nil
 }
