@@ -321,15 +321,21 @@ func (e *Engine) pauseWhileOpen(ctx context.Context, brk *breaker) bool {
 	}
 }
 
-// claim runs one Claim call inside its own root span (a claim serves many
-// notifications, so it belongs to no single trace).
+// claim runs one Claim call. A claim serves many notifications, so it is its
+// own root span. Idle polls (no rows, no error) record nothing: the span is
+// started after the call with the call's start time, so a busy claim keeps its
+// real duration.
 func (e *Engine) claim(ctx context.Context, ch domain.Channel, n int) ([]store.QueueRow, error) {
-	ctx, span := e.tracer.Start(ctx, "claim", trace.WithAttributes(attribute.String("notification.channel", string(ch))))
-	defer span.End()
+	began := e.now()
 	rows, err := e.q.Claim(ctx, ch, n, newToken())
-	span.SetAttributes(attribute.Int("claim.rows", len(rows)))
+	if len(rows) == 0 && (err == nil || ctx.Err() != nil) { // idle poll, or cut short by shutdown
+		return rows, err
+	}
+	_, span := e.tracer.Start(ctx, "claim", trace.WithNewRoot(), trace.WithTimestamp(began),
+		trace.WithAttributes(attribute.String("notification.channel", string(ch)), attribute.Int("claim.rows", len(rows))))
 	if err != nil {
 		span.SetStatus(codes.Error, "claim failed")
 	}
+	span.End()
 	return rows, err
 }

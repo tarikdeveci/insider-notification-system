@@ -36,3 +36,20 @@ func TestInvalidTraceParentIsIgnored(t *testing.T) {
 		}
 	}
 }
+
+func TestWithTraceParentDropsAmbientSpan(t *testing.T) {
+	tp := sdktrace.NewTracerProvider()
+	type key struct{}
+	base := context.WithValue(context.Background(), key{}, "kept")
+	ambient, span := tp.Tracer("t").Start(base, "ambient")
+	defer span.End()
+	for _, bad := range []string{"", "garbage"} {
+		ctx := tracectx.WithTraceParent(ambient, bad)
+		if trace.SpanContextFromContext(ctx).IsValid() {
+			t.Errorf("%q must not leave the ambient span as parent", bad)
+		}
+		if ctx.Value(key{}) != "kept" {
+			t.Errorf("%q: other context values must survive", bad)
+		}
+	}
+}

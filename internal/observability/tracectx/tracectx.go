@@ -22,9 +22,12 @@ func TraceParent(ctx context.Context) string {
 	return c.Get("traceparent")
 }
 
-// WithTraceParent returns ctx carrying tp as a remote parent. An empty or
-// malformed tp leaves ctx unchanged, so the next span becomes a new root.
+// WithTraceParent returns ctx whose only span parent is tp as a remote span.
+// Any span already in ctx is dropped first (other values and cancellation are
+// kept), so an empty or malformed tp makes the next span a new root instead of
+// inheriting an unrelated caller trace.
 func WithTraceParent(ctx context.Context, tp string) context.Context {
+	ctx = trace.ContextWithSpanContext(ctx, trace.SpanContext{})
 	if tp == "" {
 		return ctx
 	}

@@ -52,3 +52,11 @@ func TestExporterBuiltWhenEndpointSet(t *testing.T) {
 	}
 	_ = exp.Shutdown(context.Background())
 }
+
+func TestTracesEndpointAloneDoesNotEnableExporter(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://127.0.0.1:1")
+	if exp, err := observability.NewTraceExporter(context.Background()); err != nil || exp != nil {
+		t.Fatalf("only OTEL_EXPORTER_OTLP_ENDPOINT may enable exporting, got %v %v", exp, err)
+	}
+}

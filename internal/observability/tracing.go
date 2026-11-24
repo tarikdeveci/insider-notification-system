@@ -17,11 +17,11 @@ import (
 const tracingShutdownTimeout = 5 * time.Second
 
 // NewTraceExporter builds the OTLP over HTTP exporter when
-// OTEL_EXPORTER_OTLP_ENDPOINT (or the traces specific variant) is set, and
-// returns nil, nil otherwise: nothing is exported and no connection is made.
+// OTEL_EXPORTER_OTLP_ENDPOINT is set, and returns nil, nil otherwise (the
+// traces specific variant alone does not switch exporting on): nothing is exported and no connection is made.
 // The exporter itself reads the endpoint and headers from the environment.
 func NewTraceExporter(ctx context.Context) (sdktrace.SpanExporter, error) {
-	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" && os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") == "" {
+	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" {
 		return nil, nil
 	}
 	exp, err := otlptracehttp.New(ctx)
