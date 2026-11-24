@@ -41,6 +41,7 @@ type QueueRow struct {
 	ScheduledAt   *time.Time
 	CorrelationID string
 	LeaseToken    string
+	TraceParent   string // W3C traceparent stored by the API; empty when none
 }
 
 // ClaimSQL is the per priority claim probe: $1 channel, $2 priority, $3 limit, $4 lease token.
@@ -57,7 +58,7 @@ WHERE id IN (
   LIMIT $3
   FOR UPDATE SKIP LOCKED)
 RETURNING id::text, batch_id::text, channel, recipient, content, priority, attempts, max_attempts,
-          next_attempt_at, created_at, scheduled_at, correlation_id, lease_token::text`
+          next_attempt_at, created_at, scheduled_at, correlation_id, lease_token::text, COALESCE(trace_parent, '')`
 
 // Claim probes priority 0, then 1, then 2 (each probe is the spec SQL with
 // $2 = that priority and $3 = rows still needed), stops once n rows are
@@ -80,7 +81,7 @@ func (s *Store) Claim(ctx context.Context, ch domain.Channel, n int, token strin
 				priority int16
 			)
 			if err := rows.Scan(&r.ID, &r.BatchID, &channel, &r.Recipient, &r.Content, &priority, &r.Attempts,
-				&r.MaxAttempts, &r.NextAttemptAt, &r.CreatedAt, &r.ScheduledAt, &r.CorrelationID, &r.LeaseToken); err != nil {
+				&r.MaxAttempts, &r.NextAttemptAt, &r.CreatedAt, &r.ScheduledAt, &r.CorrelationID, &r.LeaseToken, &r.TraceParent); err != nil {
 				rows.Close()
 				return nil, fmt.Errorf("claim scan: %w", err)
 			}

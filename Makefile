@@ -1,4 +1,4 @@
-.PHONY: test e2e lint fmt vet up down
+.PHONY: test e2e lint fmt vet up up-tracing down
 export CGO_ENABLED=1
 
 test:
@@ -16,8 +16,13 @@ lint:
 up:
 	docker compose up -d --build
 
+# Same stack plus Jaeger (UI on http://localhost:16686); api and worker export traces to it.
+up-tracing: export OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+up-tracing:
+	docker compose --profile tracing up -d --build
+
 down:
-	docker compose down -v
+	docker compose --profile tracing down -v
 
 # Exported to every command of the recipe: compose (worker env passthrough) and the tests, which
 # recreate the worker for the priority scenario and must keep these values.

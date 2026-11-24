@@ -7,8 +7,13 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/tarikdeveci/insider-notification-system/internal/domain"
 	"github.com/tarikdeveci/insider-notification-system/internal/observability"
+	"github.com/tarikdeveci/insider-notification-system/internal/observability/tracectx"
 	"github.com/tarikdeveci/insider-notification-system/internal/provider"
 	"github.com/tarikdeveci/insider-notification-system/internal/ratelimit"
 	"github.com/tarikdeveci/insider-notification-system/internal/store"
@@ -73,7 +78,7 @@ func (e *Engine) channelLoop(ctx, drain context.Context, ch domain.Channel) {
 				<-slots
 			}
 		}
-		rows, err := e.q.Claim(ctx, ch, n, newToken())
+		rows, err := e.claim(ctx, ch, n)
 		for i := len(rows); i < n; i++ {
 			<-slots // free the slots no row will use
 		}
@@ -139,6 +144,18 @@ func sleep(ctx context.Context, d time.Duration) bool {
 // an attempt that has started.
 func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, row store.QueueRow) {
 	ch := string(row.Channel)
+	// The deliver span continues the trace the API stored on the row; an empty or
+	// malformed traceparent just starts a new trace. drain carries the same span
+	// so the send and the result write stay inside it.
+	ctx, span := e.tracer.Start(tracectx.WithTraceParent(ctx, row.TraceParent), "deliver",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.String("notification.id", row.ID),
+			attribute.String("notification.channel", ch),
+			attribute.Int("notification.priority", int(row.Priority)),
+		))
+	defer span.End()
+	drain = trace.ContextWithSpan(drain, span)
 	log = log.With("notification_id", row.ID, "correlation_id", row.CorrelationID)
 	if row.BatchID != nil {
 		log = log.With("batch_id", *row.BatchID)
@@ -195,9 +212,24 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, row store
 		return
 	}
 	log = log.With("attempt", attempt)
+	span.SetAttributes(attribute.Int("notification.attempt", attempt))
 
 	began := e.now()
-	res := e.sender.Send(drain, provider.Message{ID: row.ID, To: row.Recipient, Channel: ch, Content: row.Content})
+	sendCtx, send := e.tracer.Start(drain, "provider.send", trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("notification.channel", ch)))
+	res := e.sender.Send(sendCtx, provider.Message{ID: row.ID, To: row.Recipient, Channel: ch, Content: row.Content})
+	send.SetAttributes(attribute.String("provider.result", res.Class.String()))
+	if res.HTTPStatus != 0 {
+		send.SetAttributes(attribute.Int("http.response.status_code", res.HTTPStatus))
+	}
+	if res.ErrCode != "" {
+		send.SetAttributes(attribute.String("error.type", res.ErrCode))
+	}
+	if res.Class != provider.Success {
+		send.SetStatus(codes.Error, res.Class.String())
+		span.SetStatus(codes.Error, res.Class.String())
+	}
+	send.End()
 	tk.record(res.Class)
 	e.obs.Attempt(ch, res.Class, e.now().Sub(began))
 
@@ -287,4 +319,17 @@ func (e *Engine) pauseWhileOpen(ctx context.Context, brk *breaker) bool {
 			return false
 		}
 	}
+}
+
+// claim runs one Claim call inside its own root span (a claim serves many
+// notifications, so it belongs to no single trace).
+func (e *Engine) claim(ctx context.Context, ch domain.Channel, n int) ([]store.QueueRow, error) {
+	ctx, span := e.tracer.Start(ctx, "claim", trace.WithAttributes(attribute.String("notification.channel", string(ch))))
+	defer span.End()
+	rows, err := e.q.Claim(ctx, ch, n, newToken())
+	span.SetAttributes(attribute.Int("claim.rows", len(rows)))
+	if err != nil {
+		span.SetStatus(codes.Error, "claim failed")
+	}
+	return rows, err
 }

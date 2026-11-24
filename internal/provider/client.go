@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/tarikdeveci/insider-notification-system/internal/observability/tracectx"
 )
 
 const (
@@ -105,6 +107,7 @@ func (c *Client) Send(ctx context.Context, m Message) Result {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", m.ID)
+	tracectx.Inject(ctx, req.Header) // W3C traceparent of the active span; a no-op without one
 
 	resp, err := c.http.Do(req)
 	if err != nil {

@@ -33,6 +33,17 @@ func run() int {
 	}
 	log := observability.NewLogger(os.Stdout, cfg.LogLevel)
 
+	shutdownTracing, err := observability.SetupTracing(context.Background(), "notification-api")
+	if err != nil {
+		log.Error("tracing setup failed", observability.ErrAttrs(err)...)
+		return 1
+	}
+	defer func() {
+		if err := shutdownTracing(context.Background()); err != nil {
+			log.Error("tracing shutdown failed", observability.ErrAttrs(err)...)
+		}
+	}()
+
 	// Parse errors can echo the URL, so only the error type is logged.
 	pgCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
 	if err != nil {

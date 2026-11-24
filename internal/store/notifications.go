@@ -7,8 +7,12 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/tarikdeveci/insider-notification-system/internal/domain"
+	"github.com/tarikdeveci/insider-notification-system/internal/observability/tracectx"
 )
 
 // CreateParams carries one notification to insert plus its idempotency data.
@@ -37,18 +41,30 @@ func (s *Store) CreateNotification(ctx context.Context, p CreateParams) (CreateR
 	if err != nil {
 		return CreateResult{}, err
 	}
+	// The row keeps the caller's span (the HTTP request), not the insert span, so
+	// one trace covers the request and the later delivery.
+	traceParent := tracectx.TraceParent(ctx)
+	ctx, span := tracectx.Start(ctx, "db.insert_notification", trace.WithAttributes(
+		attribute.String("db.system.name", "postgresql"),
+		attribute.String("notification.channel", string(p.New.Channel)),
+		attribute.Int("notification.priority", int(p.New.Priority)),
+	))
+	defer span.End()
 	n, err := scanNotification(s.pool.QueryRow(ctx,
-		`INSERT INTO notifications (idempotency_key, request_hash, channel, recipient, content, priority, correlation_id, scheduled_at, next_attempt_at, template_id, template_vars)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, COALESCE($8::timestamptz, now()), $9::uuid, $10::jsonb)
+		`INSERT INTO notifications (idempotency_key, request_hash, channel, recipient, content, priority, correlation_id, scheduled_at, next_attempt_at, template_id, template_vars, trace_parent)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, COALESCE($8::timestamptz, now()), $9::uuid, $10::jsonb, NULLIF($11::text, ''))
 		 ON CONFLICT (idempotency_key) DO NOTHING
 		 RETURNING `+notificationCols,
-		key, p.RequestHash, string(p.New.Channel), p.New.Recipient, p.New.Content, int16(p.New.Priority), p.CorrelationID, p.New.ScheduledAt, p.New.TemplateID, vars))
+		key, p.RequestHash, string(p.New.Channel), p.New.Recipient, p.New.Content, int16(p.New.Priority), p.CorrelationID, p.New.ScheduledAt, p.New.TemplateID, vars, traceParent))
 	if err == nil {
+		span.SetAttributes(attribute.String("notification.id", n.ID))
 		return CreateResult{Notification: n}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) || p.IdempotencyKey == "" {
+		span.SetStatus(codes.Error, "insert failed")
 		return CreateResult{}, fmt.Errorf("insert notification: %w", err)
 	}
+	span.SetAttributes(attribute.Bool("notification.replayed", true))
 
 	return s.ResolveReplay(ctx, p.IdempotencyKey, p.RequestHash)
 }

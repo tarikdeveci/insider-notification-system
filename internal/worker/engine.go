@@ -10,8 +10,12 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/tarikdeveci/insider-notification-system/internal/domain"
 	"github.com/tarikdeveci/insider-notification-system/internal/observability"
+	"github.com/tarikdeveci/insider-notification-system/internal/observability/tracectx"
 	"github.com/tarikdeveci/insider-notification-system/internal/provider"
 	"github.com/tarikdeveci/insider-notification-system/internal/store"
 )
@@ -138,6 +142,7 @@ type Engine struct {
 	now      func() time.Time
 	channels []domain.Channel
 	brk      map[domain.Channel]*breaker
+	tracer   trace.Tracer
 }
 
 // Option customizes an Engine.
@@ -179,6 +184,15 @@ func WithClock(f func() time.Time) Option {
 	}
 }
 
+// WithTracerProvider sets the provider of the claim and deliver spans (default: the global provider).
+func WithTracerProvider(tp trace.TracerProvider) Option {
+	return func(e *Engine) {
+		if tp != nil {
+			e.tracer = tracectx.Tracer(tp)
+		}
+	}
+}
+
 // WithChannels restricts the engine to the given channels (default sms, email, push).
 func WithChannels(chs ...domain.Channel) Option {
 	return func(e *Engine) {
@@ -201,6 +215,9 @@ func New(q Queue, s Sender, l Limiter, set Settings, opts ...Option) *Engine {
 	}
 	for _, o := range opts {
 		o(e)
+	}
+	if e.tracer == nil {
+		e.tracer = tracectx.Tracer(otel.GetTracerProvider())
 	}
 	e.brk = make(map[domain.Channel]*breaker, len(e.channels))
 	for _, ch := range e.channels {

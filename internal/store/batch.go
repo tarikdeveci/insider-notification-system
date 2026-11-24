@@ -7,8 +7,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/tarikdeveci/insider-notification-system/internal/domain"
+	"github.com/tarikdeveci/insider-notification-system/internal/observability/tracectx"
 )
 
 // CreateBatchParams carries the items of one batch plus its idempotency data.
@@ -42,6 +46,24 @@ func (s *Store) CreateBatch(ctx context.Context, p CreateBatchParams) (BatchResu
 	if p.IdempotencyKey != "" {
 		key = p.IdempotencyKey
 	}
+	// All rows of the batch share the caller's traceparent (see CreateNotification).
+	traceParent := tracectx.TraceParent(ctx)
+	ctx, span := tracectx.Start(ctx, "db.insert_batch", trace.WithAttributes(
+		attribute.String("db.system.name", "postgresql"),
+		attribute.Int("batch.size", len(p.Items)),
+	))
+	defer span.End()
+	res, err := s.createBatch(ctx, p, key, traceParent)
+	switch {
+	case err != nil && !errors.Is(err, ErrIdempotencyConflict):
+		span.SetStatus(codes.Error, "insert failed")
+	case err == nil:
+		span.SetAttributes(attribute.String("batch.id", res.BatchID), attribute.Bool("batch.replayed", res.Replayed))
+	}
+	return res, err
+}
+
+func (s *Store) createBatch(ctx context.Context, p CreateBatchParams, key any, traceParent string) (BatchResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return BatchResult{}, fmt.Errorf("begin batch tx: %w", err)
@@ -87,11 +109,11 @@ func (s *Store) CreateBatch(ctx context.Context, p CreateBatchParams) (BatchResu
 		}
 	}
 	rows, err := tx.Query(ctx,
-		`INSERT INTO notifications (batch_id, batch_position, channel, recipient, content, priority, correlation_id, scheduled_at, next_attempt_at, template_id, template_vars)
-		 SELECT $1::uuid, t.pos, t.channel, t.recipient, t.content, t.priority, $7, t.scheduled_at, COALESCE(t.scheduled_at, now()), t.template_id::uuid, t.template_vars::jsonb
+		`INSERT INTO notifications (batch_id, batch_position, channel, recipient, content, priority, correlation_id, scheduled_at, next_attempt_at, template_id, template_vars, trace_parent)
+		 SELECT $1::uuid, t.pos, t.channel, t.recipient, t.content, t.priority, $7, t.scheduled_at, COALESCE(t.scheduled_at, now()), t.template_id::uuid, t.template_vars::jsonb, NULLIF($11::text, '')
 		 FROM unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::smallint[], $8::timestamptz[], $9::text[], $10::text[]) AS t(pos, channel, recipient, content, priority, scheduled_at, template_id, template_vars)
 		 RETURNING batch_position, id::text`,
-		batchID, pos, channels, recipients, contents, priorities, p.CorrelationID, scheduled, tplIDs, tplVars)
+		batchID, pos, channels, recipients, contents, priorities, p.CorrelationID, scheduled, tplIDs, tplVars, traceParent)
 	if err != nil {
 		return BatchResult{}, fmt.Errorf("insert batch items: %w", err)
 	}
