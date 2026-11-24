@@ -99,7 +99,7 @@ func TestCreateUnicodeSMSLimitIsInRunes(t *testing.T) {
 func TestCreateBadBodies(t *testing.T) {
 	h := newAPI(t)
 	for name, body := range map[string]string{
-		"empty": ``, "null": `null`, "array": `[]`, "unknown field": `{"recipient":"+905551234567","channel":"sms","content":"x","template_id":"t"}`,
+		"empty": ``, "null": `null`, "array": `[]`, "unknown field": `{"recipient":"+905551234567","channel":"sms","content":"x","bogus":"t"}`,
 		"truncated": `{"recipient"`, "trailing": smsBody + smsBody,
 	} {
 		rr := call(t, h, "POST", "/v1/notifications", body, nil)

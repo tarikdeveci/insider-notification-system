@@ -63,14 +63,32 @@ func (s *server) createNotification(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusUnprocessableEntity, "validation failed", errs)
 		return
 	}
+	// The hash is taken before rendering: it covers the template id and vars,
+	// never the rendered content (PF17).
+	hash := nn.Hash()
 	if serrs := domain.CheckSchedule(nn.ScheduledAt, s.now()); len(serrs) > 0 {
-		s.scheduleRejected(w, r, key, nn.Hash(), serrs)
+		s.scheduleRejected(w, r, key, hash, serrs)
 		return
+	}
+	if nn.TemplateID != nil {
+		tpl, err := s.Store.GetTemplate(r.Context(), *nn.TemplateID)
+		if errors.Is(err, store.ErrNotFound) {
+			writeProblem(w, r, http.StatusUnprocessableEntity, "validation failed", []domain.FieldError{unknownTemplate(nil)})
+			return
+		}
+		if err != nil {
+			internalError(w, r, s.Logger, err)
+			return
+		}
+		if rerrs := renderInto(&nn, tpl, nil); len(rerrs) > 0 {
+			writeProblem(w, r, http.StatusUnprocessableEntity, "validation failed", rerrs)
+			return
+		}
 	}
 	res, err := s.Store.CreateNotification(r.Context(), store.CreateParams{
 		New:            nn,
 		IdempotencyKey: key,
-		RequestHash:    nn.Hash(),
+		RequestHash:    hash,
 		CorrelationID:  observability.CorrelationID(r.Context()),
 	})
 	switch {

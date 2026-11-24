@@ -15,6 +15,8 @@ type Notification struct {
 	MaxAttempts       int
 	NextAttemptAt     time.Time
 	ScheduledAt       *time.Time
+	TemplateID        *string
+	TemplateVars      map[string]string
 	ProviderMessageID *string
 	LastError         *string
 	CorrelationID     string
@@ -31,4 +33,13 @@ type Attempt struct {
 	HTTPStatus *int
 	Error      *string
 	DurationMS *int
+}
+
+// Template is a reusable message body with {{var}} placeholders.
+type Template struct {
+	ID        string
+	Name      string
+	Channel   Channel
+	Body      string
+	CreatedAt time.Time
 }

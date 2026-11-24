@@ -14,6 +14,7 @@ tags:
   - name: health
   - name: notifications
   - name: batches
+  - name: templates
 paths:
   /healthz:
     get:
@@ -94,6 +95,12 @@ paths:
         malformed or out of range scheduled_at). A scheduled_at in the past or
         more than 30 days ahead is rejected for a new notification, but a replay
         with the same Idempotency-Key still answers 200 after the time has passed.
+        Send either content or template_id with template_vars, never both. The
+        template is rendered at create time and the stored content is the final
+        text. A template_id that does not exist, a template of another channel, a
+        missing variable (the message lists names only) or rendered text that
+        breaks the channel limits is a 422. The idempotency hash covers the
+        template id and vars, not the rendered text.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -327,6 +334,95 @@ paths:
           $ref: "#/components/responses/ProblemResponse"
         "500":
           $ref: "#/components/responses/ProblemResponse"
+  /v1/templates:
+    post:
+      tags: [templates]
+      operationId: createTemplate
+      summary: Create a template
+      description: |
+        The body may contain {{name}} placeholders (see the Template schema for
+        the exact grammar). 422 lists invalid fields, including a body with an
+        unclosed or malformed placeholder. 409 means the name is already taken.
+        400 is malformed JSON, an unknown field or trailing data; 413 is a body
+        over 64 KiB.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTemplateRequest"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Template"
+        "400":
+          $ref: "#/components/responses/ProblemResponse"
+        "409":
+          $ref: "#/components/responses/ProblemResponse"
+        "413":
+          $ref: "#/components/responses/ProblemResponse"
+        "422":
+          $ref: "#/components/responses/ProblemResponse"
+        "500":
+          $ref: "#/components/responses/ProblemResponse"
+    get:
+      tags: [templates]
+      operationId: listTemplates
+      summary: List templates ordered by name
+      description: |
+        The list is bounded: it returns at most limit templates (default 50,
+        maximum 100) ordered by name then id, and has no cursor. A limit outside
+        1 to 100 is a 422.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Up to limit templates.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateList"
+        "422":
+          $ref: "#/components/responses/ProblemResponse"
+        "500":
+          $ref: "#/components/responses/ProblemResponse"
+  /v1/templates/{id}:
+    get:
+      tags: [templates]
+      operationId: getTemplate
+      summary: Get one template
+      description: A malformed id is answered with 404, the same as an unknown id.
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The template.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Template"
+        "404":
+          $ref: "#/components/responses/ProblemResponse"
+        "500":
+          $ref: "#/components/responses/ProblemResponse"
   /v1/batches/{id}:
     get:
       tags: [batches]
@@ -444,7 +540,10 @@ components:
     CreateNotificationRequest:
       type: object
       additionalProperties: false
-      required: [recipient, channel, content]
+      required: [recipient, channel]
+      description: |
+        Exactly one of content and template_id is required. Sending both, or
+        neither, or template_vars without template_id, is a 422.
       properties:
         recipient:
           type: string
@@ -456,7 +555,10 @@ components:
           $ref: "#/components/schemas/Channel"
         content:
           type: string
-          description: Not blank. At most 160 characters for sms, 10000 for email, 256 for push (counted in characters, not bytes).
+          description: |
+            Not blank. At most 160 characters for sms, 10000 for email, 256 for
+            push (counted in characters, not bytes). Mutually exclusive with
+            template_id.
         priority:
           allOf:
             - $ref: "#/components/schemas/Priority"
@@ -472,6 +574,27 @@ components:
             to new notifications: replaying a request with the same
             Idempotency-Key after the time has passed still answers 200 with
             the original (a changed body answers 409).
+        template_id:
+          type: string
+          format: uuid
+          description: |
+            Id of an existing template of the same channel. The content is
+            rendered from it at create time and validated with the channel
+            limits (field errors read "rendered content: ..."). Mutually
+            exclusive with content.
+        template_vars:
+          type: object
+          maxProperties: 50
+          description: |
+            Values for the template placeholders, at most 50 entries. Names must
+            match [A-Za-z_][A-Za-z0-9_]* and each value is at most 1000
+            characters. Every placeholder of the template needs a value (a
+            missing one is a 422 naming the variable, never its value). Extra
+            entries are allowed and ignored by rendering. Only valid with
+            template_id.
+          additionalProperties:
+            type: string
+            maxLength: 1000
     Notification:
       type: object
       required:
@@ -486,6 +609,8 @@ components:
         - max_attempts
         - next_attempt_at
         - scheduled_at
+        - template_id
+        - template_vars
         - provider_message_id
         - last_error
         - correlation_id
@@ -522,6 +647,17 @@ components:
           format: date-time
           nullable: true
           description: The requested send time, null when the notification was not scheduled.
+        template_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The template the content was rendered from, null for a notification created with plain content.
+        template_vars:
+          type: object
+          nullable: true
+          description: The variables used for rendering, null when no template was used.
+          additionalProperties:
+            type: string
         provider_message_id:
           type: string
           nullable: true
@@ -540,6 +676,56 @@ components:
           type: string
           format: date-time
           nullable: true
+    CreateTemplateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, channel, body]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Unique, surrounding whitespace is trimmed.
+        channel:
+          $ref: "#/components/schemas/Channel"
+        body:
+          type: string
+          minLength: 1
+          maxLength: 10000
+          description: |
+            Template text. The only syntax is the placeholder: two opening
+            braces, optional spaces, a name matching [A-Za-z_][A-Za-z0-9_]*,
+            optional spaces, two closing braces, for example {{ name }}. There
+            is no escaping, no filter and no nesting. A name may repeat. An
+            unclosed placeholder or an invalid name is rejected with 422.
+            Rendering is a single pass, so a substituted value that contains
+            braces stays literal.
+    Template:
+      type: object
+      required: [id, name, channel, body, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        channel:
+          $ref: "#/components/schemas/Channel"
+        body:
+          type: string
+          description: Template text with {{name}} placeholders (grammar on CreateTemplateRequest.body).
+        created_at:
+          type: string
+          format: date-time
+    TemplateList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: At most limit templates ordered by name. There is no cursor.
+          items:
+            $ref: "#/components/schemas/Template"
     DeliveryAttempt:
       type: object
       required: [attempt_no, started_at, finished_at, http_status, error, duration_ms]

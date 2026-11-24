@@ -195,3 +195,26 @@ func TestRequestIDEcho(t *testing.T) {
 		t.Fatalf("got %q", hdr.Get("X-Request-ID"))
 	}
 }
+
+func TestTemplateRendersIntoNotification(t *testing.T) {
+	needAPIPhase(t)
+	body := fmt.Sprintf(`{"name":"e2e-%s","channel":"sms","body":"Hi {{name}}, code {{ code }}"}`, uniq())
+	code, _, tp := call(t, "POST", "/v1/templates", body, nil)
+	if code != 201 {
+		t.Fatalf("create template: %d %v", code, tp)
+	}
+	tid := tp["id"].(string)
+	req := fmt.Sprintf(`{"recipient":"+905551234567","channel":"sms","template_id":%q,"template_vars":{"name":"Ada","code":"42"}}`, tid)
+	code, _, n := call(t, "POST", "/v1/notifications", req, nil)
+	if code != 201 || n["content"] != "Hi Ada, code 42" || n["template_id"] != tid {
+		t.Fatalf("create from template: %d %v", code, n)
+	}
+	id := n["id"].(string)
+	if code, _, got := call(t, "GET", "/v1/notifications/"+id, "", nil); code != 200 || got["content"] != "Hi Ada, code 42" {
+		t.Fatalf("get: %d %v", code, got)
+	}
+	miss := fmt.Sprintf(`{"recipient":"+905551234567","channel":"sms","template_id":%q,"template_vars":{"name":"Ada"}}`, tid)
+	if code, _, _ := call(t, "POST", "/v1/notifications", miss, nil); code != 422 {
+		t.Fatalf("missing variable: %d", code)
+	}
+}

@@ -68,6 +68,8 @@ func (s *Store) CreateBatch(ctx context.Context, p CreateBatchParams) (BatchResu
 	contents := make([]string, n)
 	priorities := make([]int16, n)
 	scheduled := make([]*time.Time, n)
+	tplIDs := make([]*string, n)
+	tplVars := make([]*string, n)
 	for i, it := range p.Items {
 		pos[i] = int32(i)
 		channels[i] = string(it.Channel)
@@ -75,13 +77,21 @@ func (s *Store) CreateBatch(ctx context.Context, p CreateBatchParams) (BatchResu
 		contents[i] = it.Content
 		priorities[i] = int16(it.Priority)
 		scheduled[i] = it.ScheduledAt
+		tplIDs[i] = it.TemplateID
+		v, err := varsJSON(it.TemplateVars)
+		if err != nil {
+			return BatchResult{}, err
+		}
+		if js, ok := v.(string); ok {
+			tplVars[i] = &js
+		}
 	}
 	rows, err := tx.Query(ctx,
-		`INSERT INTO notifications (batch_id, batch_position, channel, recipient, content, priority, correlation_id, scheduled_at, next_attempt_at)
-		 SELECT $1::uuid, t.pos, t.channel, t.recipient, t.content, t.priority, $7, t.scheduled_at, COALESCE(t.scheduled_at, now())
-		 FROM unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::smallint[], $8::timestamptz[]) AS t(pos, channel, recipient, content, priority, scheduled_at)
+		`INSERT INTO notifications (batch_id, batch_position, channel, recipient, content, priority, correlation_id, scheduled_at, next_attempt_at, template_id, template_vars)
+		 SELECT $1::uuid, t.pos, t.channel, t.recipient, t.content, t.priority, $7, t.scheduled_at, COALESCE(t.scheduled_at, now()), t.template_id::uuid, t.template_vars::jsonb
+		 FROM unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::smallint[], $8::timestamptz[], $9::text[], $10::text[]) AS t(pos, channel, recipient, content, priority, scheduled_at, template_id, template_vars)
 		 RETURNING batch_position, id::text`,
-		batchID, pos, channels, recipients, contents, priorities, p.CorrelationID, scheduled)
+		batchID, pos, channels, recipients, contents, priorities, p.CorrelationID, scheduled, tplIDs, tplVars)
 	if err != nil {
 		return BatchResult{}, fmt.Errorf("insert batch items: %w", err)
 	}

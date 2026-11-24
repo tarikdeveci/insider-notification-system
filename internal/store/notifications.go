@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -32,12 +33,16 @@ func (s *Store) CreateNotification(ctx context.Context, p CreateParams) (CreateR
 	if p.IdempotencyKey != "" {
 		key = p.IdempotencyKey
 	}
+	vars, err := varsJSON(p.New.TemplateVars)
+	if err != nil {
+		return CreateResult{}, err
+	}
 	n, err := scanNotification(s.pool.QueryRow(ctx,
-		`INSERT INTO notifications (idempotency_key, request_hash, channel, recipient, content, priority, correlation_id, scheduled_at, next_attempt_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, COALESCE($8::timestamptz, now()))
+		`INSERT INTO notifications (idempotency_key, request_hash, channel, recipient, content, priority, correlation_id, scheduled_at, next_attempt_at, template_id, template_vars)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, COALESCE($8::timestamptz, now()), $9::uuid, $10::jsonb)
 		 ON CONFLICT (idempotency_key) DO NOTHING
 		 RETURNING `+notificationCols,
-		key, p.RequestHash, string(p.New.Channel), p.New.Recipient, p.New.Content, int16(p.New.Priority), p.CorrelationID, p.New.ScheduledAt))
+		key, p.RequestHash, string(p.New.Channel), p.New.Recipient, p.New.Content, int16(p.New.Priority), p.CorrelationID, p.New.ScheduledAt, p.New.TemplateID, vars))
 	if err == nil {
 		return CreateResult{Notification: n}, nil
 	}
@@ -103,4 +108,16 @@ func (s *Store) ListAttempts(ctx context.Context, id string) ([]domain.Attempt, 
 		return nil, fmt.Errorf("list attempts: %w", err)
 	}
 	return out, nil
+}
+
+// varsJSON encodes template vars for a jsonb parameter; nil means SQL NULL.
+func varsJSON(v map[string]string) (any, error) {
+	if len(v) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("encode template vars: %w", err)
+	}
+	return string(b), nil
 }

@@ -10,23 +10,25 @@ import (
 )
 
 type notificationDTO struct {
-	ID                string     `json:"id"`
-	BatchID           *string    `json:"batch_id"`
-	Channel           string     `json:"channel"`
-	Recipient         string     `json:"recipient"`
-	Content           string     `json:"content"`
-	Priority          string     `json:"priority"`
-	Status            string     `json:"status"`
-	Attempts          int        `json:"attempts"`
-	MaxAttempts       int        `json:"max_attempts"`
-	NextAttemptAt     time.Time  `json:"next_attempt_at"`
-	ScheduledAt       *time.Time `json:"scheduled_at"`
-	ProviderMessageID *string    `json:"provider_message_id"`
-	LastError         *string    `json:"last_error"`
-	CorrelationID     string     `json:"correlation_id"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
-	SentAt            *time.Time `json:"sent_at"`
+	ID                string            `json:"id"`
+	BatchID           *string           `json:"batch_id"`
+	Channel           string            `json:"channel"`
+	Recipient         string            `json:"recipient"`
+	Content           string            `json:"content"`
+	Priority          string            `json:"priority"`
+	Status            string            `json:"status"`
+	Attempts          int               `json:"attempts"`
+	MaxAttempts       int               `json:"max_attempts"`
+	NextAttemptAt     time.Time         `json:"next_attempt_at"`
+	ScheduledAt       *time.Time        `json:"scheduled_at"`
+	TemplateID        *string           `json:"template_id"`
+	TemplateVars      map[string]string `json:"template_vars"`
+	ProviderMessageID *string           `json:"provider_message_id"`
+	LastError         *string           `json:"last_error"`
+	CorrelationID     string            `json:"correlation_id"`
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
+	SentAt            *time.Time        `json:"sent_at"`
 }
 
 type attemptDTO struct {
@@ -57,6 +59,8 @@ func toDTO(n domain.Notification) notificationDTO {
 		MaxAttempts:       n.MaxAttempts,
 		NextAttemptAt:     n.NextAttemptAt,
 		ScheduledAt:       n.ScheduledAt,
+		TemplateID:        n.TemplateID,
+		TemplateVars:      n.TemplateVars,
 		ProviderMessageID: n.ProviderMessageID,
 		LastError:         n.LastError,
 		CorrelationID:     n.CorrelationID,

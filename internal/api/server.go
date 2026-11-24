@@ -61,6 +61,9 @@ func (s *server) routes() []route {
 		{"POST /v1/notifications/batch", s.createBatch},
 		{"POST /v1/notifications/{id}/cancel", s.cancelNotification},
 		{"POST /v1/notifications/{id}/retry", s.retryNotification},
+		{"POST /v1/templates", s.createTemplate},
+		{"GET /v1/templates/{id}", s.getTemplate},
+		{"GET /v1/templates", s.listTemplates},
 		{"GET /v1/batches/{id}", s.getBatch},
 		{"POST /v1/batches/{id}/cancel", s.cancelBatch},
 	}

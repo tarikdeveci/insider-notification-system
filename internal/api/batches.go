@@ -55,6 +55,13 @@ func (s *server) createBatch(w http.ResponseWriter, r *http.Request) {
 		s.batchScheduleRejected(w, r, key, hash, serrs)
 		return
 	}
+	if rerrs, err := s.renderBatch(r.Context(), items); err != nil {
+		internalError(w, r, s.Logger, err)
+		return
+	} else if len(rerrs) > 0 {
+		writeProblem(w, r, http.StatusUnprocessableEntity, "validation failed", rerrs)
+		return
+	}
 	res, err := s.Store.CreateBatch(r.Context(), store.CreateBatchParams{
 		Items:          items,
 		IdempotencyKey: key,
