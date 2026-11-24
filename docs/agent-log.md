@@ -270,3 +270,31 @@ Found by the load test agent, not by any review:
 ### CP4 gate
 
 Gate: passed on `main` at 552a4bd after all four branches were merged. `make test` (with -race): all packages ok, 22s with a warm build cache. `make lint`: 0 issues. `make e2e`: API phase ok (1.6s, was 21s at CP3), engine phase ok (44.7s, was 279s), 86s in total including build and teardown. The speedup is the database fix above, not a code change. Tracing checked live with `make up-tracing`: one sms produced a single trace in Jaeger with `POST /v1/notifications` and `db.insert_notification` from the API and `deliver` and `provider.send` from the worker.
+
+## Red team: independent adversarial review before submission (24 Nov 2026)
+
+An Opus red team agent with no knowledge of how the code was built reviewed the whole repository. It reported 15 findings (5 medium, 8 low, 2 nits that bundled 4 items). The controller verified findings 1, 2, 3, 4 and 13 in the code before any fix. Two sonnet agents fixed them on separate worktrees (worker and store, API and provider), one commit per finding, test first.
+
+Fixed:
+
+- Redis outage: the worker released and reclaimed rows in a hot loop and logged one warning per row. Now the loop backs off, released rows wait out the pause, one warning per outage.
+- `MAX_DELIVERY_AGE` was only checked when an attempt ended, so a row that waited 25 hours was still sent once. The claim now fails it as `expired` on the database clock.
+- Template rendering was unbounded before the length check. The rendered size is computed first, and a body holds at most 100 placeholders.
+- The API `/readyz` depended on Redis, which the API never uses. It checks Postgres only, and the dead `Deps.Redis` field is gone.
+- Error logs always said `err_type=*fmt.wrapError`. A data free `err_class` is logged next to it.
+- A NUL byte was a 500 from Postgres. Control characters are now a 422.
+- Attempt history had no stable order after a 429 refund and the reaper wrote no entry. Migration 0003 adds a write order and the reaper records `lease_expired`.
+- Retry times mixed the worker and database clocks. The policy returns a delay and the store adds it to `now()`.
+- The provider client used the default transport (2 idle connections per host). It has its own, sized for every sender.
+- Compose let Docker kill the worker after 10s while it drains for 15s, and `RATELIMIT_MAX_WAIT` was not checked against the 30s lease. Both fixed, both tested.
+- A failing claim probe left rows claimed by earlier probes in `processing`. They are returned now.
+- 408 was permanent; 408 and 425 are retryable.
+- Nits: the API logged `correlation_id` twice, the limiter wait metric counted errors, `GetBatch` read counts and the batch in two snapshots.
+
+Found by the controller while documenting the fixes, not by the red team: moving the age check to claim made `POST /retry` useless for a row past the age, because the next claim failed it again with no attempt. Migration 0004 adds `requeued_at` and a manual retry now starts a fresh window (12704ac).
+
+Left on purpose, with reasons in the README: zero burst GCRA (finding 7), the trusted client `traceparent` (finding 14) and the 160 character SMS limit against UCS 2 segments.
+
+Environment: Docker Desktop crashed twice during the fixes (the engine pipe vanished, then a 500 from the daemon). Killing the Docker processes, `wsl --shutdown` and moving the stale `run` folder aside brought it back both times. The worker agent stalled after the second crash; the controller finished its last findings in the same worktree.
+
+Gate: passed on `main` at 12704ac. `make test` (with -race): all packages ok. `make lint`: 0 issues. `make e2e`: API phase 1.4s, engine phase 44.1s. `make load`: 10,000 sent, 0 failed, 93.8 per second per channel, busiest 1 second window 101 to 102 arrivals, PASS.

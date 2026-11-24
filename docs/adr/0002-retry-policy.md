@@ -14,13 +14,14 @@ Every provider call is classified into one of four classes:
 |---|---|---|
 | any 2xx (expected 202) | success | `sent`. Never retried, because the provider accepted it. |
 | 429 | throttled | Back to `pending`; honors `Retry-After` clamped to 1s..60s, else backoff. Does not consume an attempt. |
-| 5xx, timeout (client timeout 5s), connection error | retryable | Backoff, consumes the attempt. |
+| 5xx, 408, 425, timeout (client timeout 5s), connection error | retryable | Backoff, consumes the attempt. |
 | other 4xx, and any 3xx (redirects are disabled) | permanent | `failed`. |
 
 - Backoff is full jitter exponential: `delay = random(0, min(cap, base * 2^(attempt-1)))`, with `RETRY_BASE_DELAY` 2s and `RETRY_MAX_DELAY` 10m.
 - `max_attempts` is 8 (column default). Only real send attempts count. `attempts` is incremented right before the HTTP call, not at claim. 8 attempts have 7 waits, at most 2+4+8+16+32+64+128 = 254 seconds in total (about 4.2 minutes worst case, about 2.1 minutes on average), so a notification survives provider outages of a few minutes.
 - A 429 refunds its attempt in the same statement that requeues the row (a 429 past `MAX_DELIVERY_AGE` fails instead and keeps it). Circuit breaker pauses and rate limiter waits do not consume attempts either.
-- Because 429s are free, a second bound stops endless retry traffic: `MAX_DELIVERY_AGE` (default 24h), measured from `COALESCE(scheduled_at, created_at)`. A retry, 429 requeue or reaper transition past that age ends in `failed` with reason `expired`.
+- Because 429s are free, a second bound stops endless retry traffic: `MAX_DELIVERY_AGE` (default 24h), measured from `GREATEST(requeued_at, COALESCE(scheduled_at, created_at))`, so a manual retry starts a fresh window. The claim checks it on the database clock and fails a pending row past it as `expired` without a send; a retry, 429 requeue or reaper transition past that age also ends in `failed` with reason `expired`.
+- The policy returns a delay, not a time. The store writes `next_attempt_at = now() + delay` in the fenced update, so every schedule uses the database clock.
 - An attempt whose outcome is unknown (the worker died after the increment and before the result) counts as used, because the provider may have received it. The reaper fails the row with reason `exhausted` if no attempts are left.
 - The decision logic is a pure function (`internal/worker/retry.go`) with injected clock and jitter source, so it is unit tested without I/O.
 

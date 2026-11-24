@@ -14,7 +14,7 @@ Use GCRA (generic cell rate algorithm) in one atomic Redis Lua script per channe
 - The script reads the clock with `redis.call('TIME')`. There is one clock for all replicas, so worker clock skew cannot break the limit.
 - A permit is taken per send, right before the attempt starts. Retries therefore count against the limit, and empty claims waste no permits.
 - The wait is bounded: `RATELIMIT_MAX_WAIT` (default 10s). Past it, the row is released back to `pending` with no attempt used. The same happens on shutdown or when the breaker opens.
-- It fails closed: any Redis error means no permit and the row is released. Workers pause sending rather than risk exceeding the provider limit during a flash sale. The worker `/readyz` reports 503 when Redis does not answer.
+- It fails closed: any Redis error means no permit and the row is released. Workers pause sending rather than risk exceeding the provider limit during a flash sale. The worker `/readyz` reports 503 when Redis does not answer; the API does not use Redis and stays ready. While the limiter fails, the channel loop backs off (1s doubling to 16s, reset by the first admitted row), released rows are pushed back by the same pause, and one warning is logged per outage.
 - Guarantee, stated for admissions: granted slot times are at least 10ms apart, so any half-open one second window `[t, t+1s)` holds at most 100 admissions. The exact bound is tested at admission. Arrivals at the provider can bunch slightly after admission, so the end to end arrival check uses a small tolerance.
 
 ## Alternatives considered
@@ -28,5 +28,7 @@ Use GCRA (generic cell rate algorithm) in one atomic Redis Lua script per channe
 Good: a strict, smooth bound shared by all replicas, with one round trip per send and a tested admission guarantee.
 
 Bad: Redis is on the send path, so a Redis outage stops all sending (a deliberate choice). The limit also caps throughput at 100 per second per channel, so each send costs one script call, and a replica waiting for a slot holds a sender slot while it waits.
+
+Known limitation: zero burst tolerance costs 6% to 13% of throughput (87 to 94 per second measured), because refused senders sleep and ask again, together. A reservation style script that returns the next free slot would remove the retry round trip; it was left for later because this script carries the admission guarantee.
 
 Known limitation: a single Redis instance, not a replicated one. Next step: Redis with failover (or Sentinel), and a measured decision on batching permit requests if the call rate ever becomes the bottleneck.
