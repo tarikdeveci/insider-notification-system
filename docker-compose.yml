@@ -42,6 +42,8 @@ services:
   api:
     <<: *app
     command: ["api"]
+    # The API drains for up to 10s on SIGTERM; Docker's default grace is 10s.
+    stop_grace_period: 20s
     environment:
       <<: *app-env
       REDIS_URL: redis://redis:6379/0
@@ -77,6 +79,8 @@ services:
   worker:
     <<: *app
     command: ["worker"]
+    # Must exceed SHUTDOWN_TIMEOUT (15s by default); raise it together with that value.
+    stop_grace_period: 30s
     environment:
       <<: *app-env
       REDIS_URL: redis://redis:6379/0
