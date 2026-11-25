@@ -17,7 +17,7 @@ Limits followed: at most 2 Claude subagents at a time, Sonnet at normal effort, 
 ### Per-task loop
 
 1. Brief: the controller writes a task brief from the plan and the binding design spec, plus shared implementer rules.
-2. Implement: a Sonnet subagent writes tests and code and makes one feature commit (Opus co-author trailer).
+2. Implement: a Sonnet subagent writes tests and code and makes one feature commit. During the build each commit carried a Claude co-author trailer; I stripped those trailers from the history before submission (trees, authors and dates unchanged), so the hashes in this log are the rewritten ones.
 3. Review: Codex reads the diff against the brief and returns a spec verdict (PASS or FAIL) and a quality verdict (APPROVED or CHANGES), with findings graded critical, important or minor, plus "cannot verify" items.
 4. Verify: the controller checks every Codex finding and every cannot-verify item against the code before acting.
 5. Fix rounds: important findings go back to the same implementer. Each round is its own `fix(<scope>)` commit, never an amend, so the review iteration is visible and the scoped re-review has a stable base.
@@ -27,40 +27,40 @@ Limits followed: at most 2 Claude subagents at a time, Sonnet at normal effort, 
 
 | Task | Subject | Commits | Review r0 | Fix rounds |
 |---|---|---|---|---|
-| 1 | Repo scaffold, testcontainers smoke tests | 2d58fce, 2161da5 | spec PASS, 1 important | 1 (2161da5) |
-| 2 | Initial schema migration and migrate runner | 785b8bd | PASS, APPROVED | 0 |
-| 3 | Domain types, validation, request hashing | a348af1 | clean | 0 |
-| 4 | Env config, slog JSON logging, correlation ids | e024f8f | clean | 0 |
-| 5 | Notification create with idempotency, get, attempts | 2a81058 | clean | 0 |
-| 6 | Listing with filters and cursor pagination | 7525c52 | clean | 0 |
-| 7 | Atomic batch create with replay, batch summary | a7a2dc4 | spec FAIL on commit trailer only, code clean | 0 (message amended, no code change) |
-| 8 | Single and batch cancel as conditional updates | 16701b4, c04c812 | 1 important | 1 (c04c812) |
-| 9 | HTTP foundation: request id, problem+json, strict decoding, health | d84c070, 5faa4cc | spec FAIL, 2 important | 1 (5faa4cc), third finding overruled |
-| 10 | Create, get, list endpoints | 73d6fe7 | PASS, APPROVED | 0 |
-| 11 | Batch create, batch summary, cancel endpoints | e535efa | PASS, APPROVED | 0 |
-| 12 | api and migrate binaries, Dockerfile, compose stack | 6b5f199 | PASS, APPROVED | 0 |
-| 13 | OpenAPI spec with route contract test | c78c10b, bbc86b9 | spec FAIL, 1 important | 1 (bbc86b9) |
-| 14 | API-level e2e suite (build tag `e2e`), plus CP1 lint fixes | d83e3d9, a538512, 63addda | spec FAIL, 2 important | 1 (a538512 and 63addda), re-review PASS |
+| 1 | Repo scaffold, testcontainers smoke tests | 97cd89f, 2107c25 | spec PASS, 1 important | 1 (2107c25) |
+| 2 | Initial schema migration and migrate runner | ffbc267 | PASS, APPROVED | 0 |
+| 3 | Domain types, validation, request hashing | 6e4bc04 | clean | 0 |
+| 4 | Env config, slog JSON logging, correlation ids | 05d8424 | clean | 0 |
+| 5 | Notification create with idempotency, get, attempts | 5c0c1f1 | clean | 0 |
+| 6 | Listing with filters and cursor pagination | f3576ac | clean | 0 |
+| 7 | Atomic batch create with replay, batch summary | d294584 | spec FAIL on commit trailer only, code clean | 0 (message amended, no code change) |
+| 8 | Single and batch cancel as conditional updates | a3ebe70, d5b51f8 | 1 important | 1 (d5b51f8) |
+| 9 | HTTP foundation: request id, problem+json, strict decoding, health | e01c946, 75500aa | spec FAIL, 2 important | 1 (75500aa), third finding overruled |
+| 10 | Create, get, list endpoints | b725b52 | PASS, APPROVED | 0 |
+| 11 | Batch create, batch summary, cancel endpoints | 9a9508b | PASS, APPROVED | 0 |
+| 12 | api and migrate binaries, Dockerfile, compose stack | 39baf65 | PASS, APPROVED | 0 |
+| 13 | OpenAPI spec with route contract test | 3dcbf53, 51a96b6 | spec FAIL, 1 important | 1 (51a96b6) |
+| 14 | API-level e2e suite (build tag `e2e`), plus CP1 lint fixes | 78fd7d5, 19abaf5, 70f3342 | spec FAIL, 2 important | 1 (19abaf5 and 70f3342), re-review PASS |
 
 Task 1 starts from the repo root. Every other task starts at the previous task's last commit. All 14 tasks closed with a clean review.
 
 ### Review findings that changed code
 
-- Task 1: test DB cleanup failures were only logged, now they fail the test (2161da5).
-- Task 8: the plan-mandated cancel race test discarded errors, now it asserts both outcomes (c04c812).
-- Task 9: the wrapper dispatch left `PathValue` empty, now path values are kept (5faa4cc).
-- Task 9: panics skipped the access log, now a recovered panic is logged once and the request still gets one access record (5faa4cc).
-- Task 13: OpenAPI said the email limit was 254 characters, the spec says 254 UTF-8 bytes, now corrected (bbc86b9).
-- Task 14: readiness probes and sleeps could exceed the 90 second e2e deadline, now readiness is bounded by the remaining deadline (a538512).
-- Task 14: the e2e `call` helper swallowed body read and JSON decode errors, now it fails the test on both (a538512).
-- CP1 lint (found by `make lint`, not by Codex): 7 errcheck findings on close and scan calls, now handled (63addda).
+- Task 1: test DB cleanup failures were only logged, now they fail the test (2107c25).
+- Task 8: the plan-mandated cancel race test discarded errors, now it asserts both outcomes (d5b51f8).
+- Task 9: the wrapper dispatch left `PathValue` empty, now path values are kept (75500aa).
+- Task 9: panics skipped the access log, now a recovered panic is logged once and the request still gets one access record (75500aa).
+- Task 13: OpenAPI said the email limit was 254 characters, the spec says 254 UTF-8 bytes, now corrected (51a96b6).
+- Task 14: readiness probes and sleeps could exceed the 90 second e2e deadline, now readiness is bounded by the remaining deadline (19abaf5).
+- Task 14: the e2e `call` helper swallowed body read and JSON decode errors, now it fails the test on both (19abaf5).
+- CP1 lint (found by `make lint`, not by Codex): 7 errcheck findings on close and scan calls, now handled (70f3342).
 
 ### Controller rulings
 
 - Work on `main`, no worktree: the public history is the deliverable and a branch can be cut later.
 - Task review goes to Codex, spec compliance and quality in one pass: spec section 4 sends all reviews to Codex, which saves Claude quota and controller context. Cost: the separate Sonnet spec check from the workflow is skipped.
 - Review fixes land as separate commits instead of amends: the scoped re-review needs the fix base as an ancestor, and the iteration stays visible.
-- Task 7: only the commit message was amended (trailer had the wrong model name), no code change, so no re-review. The shared implementer rules now pin the trailer.
+- Task 7: only the commit message was amended (trailer had the wrong model name), no code change, so no re-review. The shared implementer rules then pinned the trailer, until all trailers were stripped before submission (see the per-task loop).
 - Task 8: accept the race test finding, the plan text did not require discarding errors and the spec wants races resolved in the database.
 - Task 9: the brief's middleware order conflicted with one access record per request, the requirement won. A re-review asked to restore the brief's order (I3), which was overruled: the kept order is RequestID, AccessLog, Recover, mux, it meets the requirement with no extra machinery and the PF1 and PF3 tests pass.
 - Task 14: fix the swallowed errors in the e2e helper, it is a test hygiene defect and the stricter test costs nothing.
@@ -101,7 +101,7 @@ Preflight rulings (Codex conflict scan of the plan against the spec, PF1 to PF8)
 
 ### CP1 gate
 
-Gate: passed at commit 63addda on a clean tree. `make test` (with -race): all 7 packages ok. `make lint`: 0 issues. `make e2e` (with -race): ok, stack torn down, no containers left.
+Gate: passed at commit 70f3342 on a clean tree. `make test` (with -race): all 7 packages ok. `make lint`: 0 issues. `make e2e` (with -race): ok, stack torn down, no containers left.
 
 ## CP2: delivery engine, rate limiting, retries, metrics, engine e2e (Tasks 15 to 22)
 
@@ -111,32 +111,32 @@ Same roles, limits and per-task loop as CP1. Before Task 16, Codex ran a second 
 
 | Task | Subject | Commits | Review r0 | Fix rounds |
 |---|---|---|---|---|
-| 15 | Provider HTTP client and response classification | 17b56b5 | PASS, APPROVED | 0 |
-| 16 | Redis GCRA rate limiter with bounded wait | 76278a4, cb3b2de | spec FAIL, 1 important | 1 (cb3b2de), remainder routed to Task 19 |
-| 17 | Retry policy (backoff, jitter, 429 handling) | e66110a | PASS, APPROVED | 0 |
-| 18 | Queue operations: claim, start, finish, release, reap, depth | c0ed571 | PASS, 2 minor | 0 |
-| 19 | Worker engine, reaper loop, shutdown, worker config | 7245875, 0edeb8d, 8805747 | 2 important | 1 (8805747), plus controller fix 0edeb8d |
-| 20 | Configurable mock provider | bf2d021, f62ea0e | spec FAIL, 4 important | 1 (f62ea0e) |
-| 21 | Prometheus metrics, worker and mock provider in compose | 2616ba3, 8969ba8 | spec FAIL, 1 important | 1 (8969ba8, by ruling) |
-| 22 | Engine e2e suite and claim index plan check (R8) | ee55fed, 3ac38ea | spec FAIL, 2 important | 1 (3ac38ea) |
+| 15 | Provider HTTP client and response classification | 36dc123 | PASS, APPROVED | 0 |
+| 16 | Redis GCRA rate limiter with bounded wait | c1e185d, 0a3f558 | spec FAIL, 1 important | 1 (0a3f558), remainder routed to Task 19 |
+| 17 | Retry policy (backoff, jitter, 429 handling) | 5c14b24 | PASS, APPROVED | 0 |
+| 18 | Queue operations: claim, start, finish, release, reap, depth | ed9ed8e | PASS, 2 minor | 0 |
+| 19 | Worker engine, reaper loop, shutdown, worker config | 9b2146e, 2255939, 83bb48a | 2 important | 1 (83bb48a), plus controller fix 2255939 |
+| 20 | Configurable mock provider | a09c500, d136de4 | spec FAIL, 4 important | 1 (d136de4) |
+| 21 | Prometheus metrics, worker and mock provider in compose | bcde608, 400d106 | spec FAIL, 1 important | 1 (400d106, by ruling) |
+| 22 | Engine e2e suite and claim index plan check (R8) | b50efea, 6c845f5 | spec FAIL, 2 important | 1 (6c845f5) |
 
 ### Review findings that changed code
 
-- Task 16: max wait was not enforced across retries and Redis calls, now the budget is checked before every script call and overdue grants are rejected (cb3b2de). The rest (go-redis ignores context deadlines on socket I/O unless `ContextTimeoutEnabled` is set) was routed to Task 19, where the worker builds its Redis client.
-- Task 19: the default idle backoff was never applied, so an idle worker polled every 200ms, now it grows to 1s (8805747).
-- Task 19: `StartAttempt` ran on the drain context, so new attempts could begin after shutdown started, now no new attempt starts once shutdown begins (8805747).
-- Task 20: the mock accepted trailing JSON, a missing `content` field and NaN or Inf rates, now all are rejected (f62ea0e).
-- Task 20: a scripted 1xx status produced a final 200 (Go writes 200 after a 1xx), now statuses are limited to 200..599 (f62ea0e).
-- Task 22: the priority scenario inferred priority from arrival order while several senders ran in parallel, now it runs with one sender per channel (3ac38ea).
-- Task 22: the R8 check did not multiply filtered rows by `Actual Loops`, so a repeated scan could pass the 500 row budget, now the whole per-loop sum is multiplied and unexecuted nodes add nothing (3ac38ea).
+- Task 16: max wait was not enforced across retries and Redis calls, now the budget is checked before every script call and overdue grants are rejected (0a3f558). The rest (go-redis ignores context deadlines on socket I/O unless `ContextTimeoutEnabled` is set) was routed to Task 19, where the worker builds its Redis client.
+- Task 19: the default idle backoff was never applied, so an idle worker polled every 200ms, now it grows to 1s (83bb48a).
+- Task 19: `StartAttempt` ran on the drain context, so new attempts could begin after shutdown started, now no new attempt starts once shutdown begins (83bb48a).
+- Task 20: the mock accepted trailing JSON, a missing `content` field and NaN or Inf rates, now all are rejected (d136de4).
+- Task 20: a scripted 1xx status produced a final 200 (Go writes 200 after a 1xx), now statuses are limited to 200..599 (d136de4).
+- Task 22: the priority scenario inferred priority from arrival order while several senders ran in parallel, now it runs with one sender per channel (6c845f5).
+- Task 22: the R8 check did not multiply filtered rows by `Actual Loops`, so a repeated scan could pass the 500 row budget, now the whole per-loop sum is multiplied and unexecuted nodes add nothing (6c845f5).
 
 ### Controller rulings
 
 - Task 16: route the remaining max wait point to Task 19. The limiter receives an injected client and cannot set its options; the knob lives where the client is built.
-- Task 19: an implementer reported two "pre-existing intermittent" ratelimit failures. The controller traced them to test isolation (a 1h key leaked across `-count` runs) and timing, and fixed the tests (0edeb8d) instead of accepting the label.
+- Task 19: an implementer reported two "pre-existing intermittent" ratelimit failures. The controller traced them to test isolation (a 1h key leaked across `-count` runs) and timing, and fixed the tests (2255939) instead of accepting the label.
 - Task 19: a Claim context cancelled at shutdown can leave committed rows in `processing` until the lease expires; the reaper recovers them (PF13). Accepted as designed, documented for the README.
 - Task 20: 1xx statuses removed from the mock protocol (PF15 amendment) instead of emulating them.
-- Task 21: the review asked for 27 zero `queue_depth` series when the first query fails. Overruled: zeros during a startup database outage read as an empty queue and hide the outage. The series is absent until the first successful refresh (an `absent()` alert can catch it), then all 27 combinations are emitted. The controller added the missing test (8969ba8) and wrote the PF14 amendment.
+- Task 21: the review asked for 27 zero `queue_depth` series when the first query fails. Overruled: zeros during a startup database outage read as an empty queue and hide the outage. The series is absent until the first successful refresh (an `absent()` alert can catch it), then all 27 combinations are emitted. The controller added the missing test (400d106) and wrote the PF14 amendment.
 - Task 21: the implementer changed `TestRateLimiterWaitBoundedThenRelease` outside the brief, calling it flaky. It passed 10 of 10 in isolation on the previous commit, but the stated cause (a cancel landing inside a Claim call, the PF13 path) is real under load and the change is test only, so it was accepted.
 - Task 21: the Codex re-review hung (no CPU for over 1.5 hours) and was killed, not retried. The fix range was a single test written by the controller, so the controller re-reviewed it. The review script now has a 15 minute timeout.
 
@@ -162,12 +162,12 @@ Preflight rulings (PF9 to PF16):
 
 - Docker Desktop failed to start with "removing stale socket ... userAnalyticsOtlpHttp.sock". The file is an AF_UNIX reparse point that `del`, `fsutil` and `Remove-Item` cannot remove. Fix: quit Docker, `wsl --shutdown`, rename `%LOCALAPPDATA%\Docker\run`, start Docker. Needed twice in CP2.
 - The Docker engine hung during Task 22 (`docker info` blocked for minutes, testcontainers got 500). A forced restart with the same steps fixed it.
-- `core.autocrlf=true` turned Go files into CRLF after stash or checkout and gofmt flagged them; `.gitattributes` now pins LF (0edeb8d).
+- `core.autocrlf=true` turned Go files into CRLF after stash or checkout and gofmt flagged them; `.gitattributes` now pins LF (2255939).
 - The engine e2e phase takes about 4.5 to 5 minutes, mostly retry waits and worker stop and start in two scenarios.
 
 ### CP2 gate
 
-Gate: passed at commit 3ac38ea on a clean tree. `make test` (with -race): all 12 packages ok. `make lint`: 0 issues. `make e2e`: API phase ok (4s), engine phase ok (257s), stack torn down, no containers left.
+Gate: passed at commit 6c845f5 on a clean tree. `make test` (with -race): all 12 packages ok. `make lint`: 0 issues. `make e2e`: API phase ok (4s), engine phase ok (257s), stack torn down, no containers left.
 
 ## CP3: CI, scheduled sends, manual retry, circuit breaker, templates, OpenAPI validation (Tasks 23 to 28)
 
@@ -177,18 +177,18 @@ Same roles and per-task loop. Before Task 24, the controller wrote CP3 preflight
 
 | Task | Subject | Commits | Review r0 | Fix rounds |
 |---|---|---|---|---|
-| 23 | GitHub Actions CI (lint, test, e2e) | 1f4785e, 80fb344 | spec FAIL, 2 important | 1 (80fb344), second finding answered with evidence |
-| 24 | Scheduled notifications | c10a49b | PASS, 1 minor | 0 |
-| 25 | Manual retry endpoint | 86bc0bc | PASS, 1 minor | 0 |
-| 26 | Per channel circuit breaker | 1fdd83c, 0fde5ff, 4f01858 | spec FAIL, 1 important | 2 |
-| 27 | Templates (migration 0002, rendering, endpoints) | bdd10ce, 16195d5 | spec FAIL, 1 important, 2 minor | 1 |
-| 28 | OpenAPI completion, responses validated against the spec | 9c760c9 | PASS, APPROVED | 0 |
+| 23 | GitHub Actions CI (lint, test, e2e) | e9fe3a6, 8fd4c96 | spec FAIL, 2 important | 1 (8fd4c96), second finding answered with evidence |
+| 24 | Scheduled notifications | 2ba8b35 | PASS, 1 minor | 0 |
+| 25 | Manual retry endpoint | 1a07f06 | PASS, 1 minor | 0 |
+| 26 | Per channel circuit breaker | c690b12, a07979f, 9f6f703 | spec FAIL, 1 important | 2 |
+| 27 | Templates (migration 0002, rendering, endpoints) | 21e155e, 9af9514 | spec FAIL, 1 important, 2 minor | 1 |
+| 28 | OpenAPI completion, responses validated against the spec | 9a1ce07 | PASS, APPROVED | 0 |
 
 ### Review findings that changed code
 
-- Task 23: the lint action was one major version behind (`@v8`); checkout, setup-go and golangci-lint-action were moved to their current majors after the controller verified the tags exist (80fb344).
-- Task 26: the probe abort test failed on the limiter before the breaker admitted a probe, so it never exercised the abort path. New engine tests admit a probe and then lose the lease, hit an infrastructure error, or shut down, and each proves the probe slot is freed. Removing `defer tk.abort()` makes all three fail (0fde5ff, 4f01858). The first fix round left the shutdown case unproven; the second review caught it.
-- Task 27: `"template_vars": {}` without `template_id` passed validation because the check was `len(...) > 0`. Now any non nil map without an id is a 422, with single and batch regression tests written red first (16195d5).
+- Task 23: the lint action was one major version behind (`@v8`); checkout, setup-go and golangci-lint-action were moved to their current majors after the controller verified the tags exist (8fd4c96).
+- Task 26: the probe abort test failed on the limiter before the breaker admitted a probe, so it never exercised the abort path. New engine tests admit a probe and then lose the lease, hit an infrastructure error, or shut down, and each proves the probe slot is freed. Removing `defer tk.abort()` makes all three fail (a07979f, 9f6f703). The first fix round left the shutdown case unproven; the second review caught it.
+- Task 27: `"template_vars": {}` without `template_id` passed validation because the check was `len(...) > 0`. Now any non nil map without an id is a 422, with single and batch regression tests written red first (9af9514).
 
 Found by the implementer, not by review:
 
@@ -228,7 +228,7 @@ Preflight rulings (PF17 to PF23):
 
 ### CP3 gate
 
-Gate: passed at commit 9c760c9 on a clean tree, 24 Nov morning, well before the 20:00 tier 3 deadline. `make test` (with -race): all 13 packages ok. `make lint`: 0 issues. `make e2e`: API phase ok (21s), engine phase ok (279s, `TestRateSmoke` included), stack torn down.
+Gate: passed at commit 9a1ce07 on a clean tree, 24 Nov morning, well before the 20:00 tier 3 deadline. `make test` (with -race): all 13 packages ok. `make lint`: 0 issues. `make e2e`: API phase ok (21s), engine phase ok (279s, `TestRateSmoke` included), stack torn down.
 
 ## CP4: tracing, load test, ADRs, final checks (Task 29 and the final phase)
 
@@ -238,10 +238,10 @@ Tarık asked for real parallelism on 24 Nov, so independent work ran in separate
 
 | Task | Subject | Commits | Review r0 | Fix rounds |
 |---|---|---|---|---|
-| 29 | OpenTelemetry tracing across the queue (API, stored trace context, worker, provider `traceparent`, Jaeger profile) | 11e271b, 9f85af7 | spec FAIL, 3 important, 1 minor | 1 |
-| Final | Deferred CP3 minors | 0a5bb2d | controller checked by mutation | 0 |
-| Final | ADRs 0001 to 0008 | 72dbb16 | controller spot checked numbers against code | 0 |
-| Final | k6 burst load test, `make load` | e353ab0, 552a4bd | controller read the diff | 1 (pinned the k6 image) |
+| 29 | OpenTelemetry tracing across the queue (API, stored trace context, worker, provider `traceparent`, Jaeger profile) | d112a7b, 6bfb352 | spec FAIL, 3 important, 1 minor | 1 |
+| Final | Deferred CP3 minors | 415dd95 | controller checked by mutation | 0 |
+| Final | ADRs 0001 to 0008 | cfd6bb5 | controller spot checked numbers against code | 0 |
+| Final | k6 burst load test, `make load` | 7bb73de, 44e09f2 | controller read the diff | 1 (pinned the k6 image) |
 
 ### Review findings that changed code
 
@@ -254,7 +254,7 @@ Tarık asked for real parallelism on 24 Nov, so independent work ran in separate
 
 Found by the load test agent, not by any review:
 
-- The host had a user level `DATABASE_URL` pointing at a hosted Postgres for another project, and `docker-compose.yml` used `${DATABASE_URL:-...}`, so the compose stack silently used that remote database instead of its own container. Every `make up` and `make e2e` since 23 Nov most likely did the same. The compose file now pins `DATABASE_URL` and `REDIS_URL` to its own containers, guarded by `TestComposeIgnoresHostDatabaseAndRedisURLs` (written red first), and `.env.example` says so (c24626c). The remote data was left untouched pending Tarık's decision.
+- The host had a user level `DATABASE_URL` pointing at a hosted Postgres for another project, and `docker-compose.yml` used `${DATABASE_URL:-...}`, so the compose stack silently used that remote database instead of its own container. Every `make up` and `make e2e` since 23 Nov most likely did the same. The compose file now pins `DATABASE_URL` and `REDIS_URL` to its own containers, guarded by `TestComposeIgnoresHostDatabaseAndRedisURLs` (written red first), and `.env.example` says so (cfd9729). The remote data was left untouched pending Tarık's decision.
 
 ### Controller rulings
 
@@ -269,7 +269,7 @@ Found by the load test agent, not by any review:
 
 ### CP4 gate
 
-Gate: passed on `main` at 552a4bd after all four branches were merged. `make test` (with -race): all packages ok, 22s with a warm build cache. `make lint`: 0 issues. `make e2e`: API phase ok (1.6s, was 21s at CP3), engine phase ok (44.7s, was 279s), 86s in total including build and teardown. The speedup is the database fix above, not a code change. Tracing checked live with `make up-tracing`: one sms produced a single trace in Jaeger with `POST /v1/notifications` and `db.insert_notification` from the API and `deliver` and `provider.send` from the worker.
+Gate: passed on `main` at 44e09f2 after all four branches were merged. `make test` (with -race): all packages ok, 22s with a warm build cache. `make lint`: 0 issues. `make e2e`: API phase ok (1.6s, was 21s at CP3), engine phase ok (44.7s, was 279s), 86s in total including build and teardown. The speedup is the database fix above, not a code change. Tracing checked live with `make up-tracing`: one sms produced a single trace in Jaeger with `POST /v1/notifications` and `db.insert_notification` from the API and `deliver` and `provider.send` from the worker.
 
 ## Red team: independent adversarial review before submission (24 Nov 2026)
 
@@ -291,13 +291,13 @@ Fixed:
 - 408 was permanent; 408 and 425 are retryable.
 - Nits: the API logged `correlation_id` twice, the limiter wait metric counted errors, `GetBatch` read counts and the batch in two snapshots.
 
-Found by the controller while documenting the fixes, not by the red team: moving the age check to claim made `POST /retry` useless for a row past the age, because the next claim failed it again with no attempt. Migration 0004 adds `requeued_at` and a manual retry now starts a fresh window (12704ac).
+Found by the controller while documenting the fixes, not by the red team: moving the age check to claim made `POST /retry` useless for a row past the age, because the next claim failed it again with no attempt. Migration 0004 adds `requeued_at` and a manual retry now starts a fresh window (654f541).
 
 Left on purpose, with reasons in the README: zero burst GCRA (finding 7), the trusted client `traceparent` (finding 14) and the 160 character SMS limit against UCS 2 segments.
 
 Environment: Docker Desktop crashed twice during the fixes (the engine pipe vanished, then a 500 from the daemon). Killing the Docker processes, `wsl --shutdown` and moving the stale `run` folder aside brought it back both times. The worker agent stalled after the second crash; the controller finished its last findings in the same worktree.
 
-Gate: passed on `main` at 12704ac. `make test` (with -race): all packages ok. `make lint`: 0 issues. `make e2e`: API phase 1.4s, engine phase 44.1s. `make load`: 10,000 sent, 0 failed, 93.8 per second per channel, busiest 1 second window 101 to 102 arrivals, PASS.
+Gate: passed on `main` at 654f541. `make test` (with -race): all packages ok. `make lint`: 0 issues. `make e2e`: API phase 1.4s, engine phase 44.1s. `make load`: 10,000 sent, 0 failed, 93.8 per second per channel, busiest 1 second window 101 to 102 arrivals, PASS.
 
 ## Codex second opinion: hardcore read only review (25 Nov 2026)
 
