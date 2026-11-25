@@ -11,7 +11,7 @@ docker compose up -d --build     # or: make up
 curl -s localhost:8080/readyz    # {"checks":{"postgres":"ok"},"status":"ok"}
 ```
 
-The stack starts Postgres, Redis, a one shot `migrate` job, `api` on `127.0.0.1:8080`, `worker` and `mock-provider` (inspection port `127.0.0.1:9090`). Stop it with `make down` (also deletes the volume).
+The stack starts Postgres, Redis, a one shot `migrate` job, `api` on `127.0.0.1:8080`, `worker` (metrics on a host port Docker assigns, see Observability) and `mock-provider` (inspection port `127.0.0.1:9090`). Stop it with `make down` (also deletes the volume).
 
 To deliver to webhook.site instead of the mock, copy `.env.example` to `.env` and set `PROVIDER_URL=https://webhook.site/<your-uuid>`. `.env` is gitignored; the URL is never logged.
 
@@ -60,8 +60,9 @@ curl -s -X POST localhost:8080/v1/notifications -H 'Content-Type: application/js
 # Requeue a failed notification (dead letter)
 curl -s -X POST localhost:8080/v1/notifications/<id>/retry
 
-# Metrics
-curl -s localhost:8080/metrics | grep notifications_
+# Metrics: the API has created counts and queue depth, the worker has sent, failed and latency
+curl -s localhost:8080/metrics | grep -E '^(notifications_created|queue_depth)'
+curl -s "$(docker compose port worker 8081)/metrics" | grep -E '^(notifications_(sent|failed)_total|delivery_attempts_total|notification_end_to_end_seconds_count)'
 ```
 
 The full contract is `api/openapi.yaml` (OpenAPI 3.0.3). A contract test keeps it in sync with the router, and 53 real responses are validated against it.
@@ -150,19 +151,19 @@ What a marketer can rely on:
 
 ## Observability
 
-- **Metrics:** `GET /metrics` on the API; the worker exposes its own on port 8081 inside the compose network. Queue depth is computed by the API only (one collector, not one per replica) when `/metrics` is scraped, cached for 5 seconds.
+- **Metrics:** `GET /metrics` on the API; the worker exposes sent and failed counters, attempts by result, provider latency and end to end latency on a `127.0.0.1` port Docker assigns, so `--scale worker=3` cannot collide on a fixed port. `docker compose port worker 8081` prints the address, `--index 2` that of the second replica. Queue depth is computed by the API only (one collector, not one per replica) when `/metrics` is scraped, cached for 5 seconds.
 - **Logs:** JSON via slog. Recipients, content, template variables, the provider URL and provider response bodies are never logged. Access logs record the matched route pattern, not the raw path, so an id typed into a URL cannot leak.
 - **Errors** are logged as `err_type`, a data free `err_class` (`deadline_exceeded`, `pg_error`, `net_op_error` and so on) and, for Postgres, the SQLSTATE and constraint name. The error text itself is never logged, because it can carry row data. A Postgres pool acquire timeout shows up as `err_class=deadline_exceeded`.
 - **Tracing:** `make up-tracing` starts the stack with a Jaeger container and sets `OTEL_EXPORTER_OTLP_ENDPOINT`. Open `http://localhost:16686`. The API stores the W3C `traceparent` on the row; the worker's `deliver` span is its child, and the `provider.send` span injects `traceparent` into the outgoing request. Without the variable, tracing exports nothing.
 
 ## Tests and numbers
 
-293 test functions, all run with `-race`:
+294 test functions, all run with `-race`:
 
 | Suite | Tests | What it covers | Time on my machine |
 |---|---|---|---|
 | `make test`, internal packages | 265 | Domain validation, retry policy, breaker, templates, provider classification; store, limiter and API tests against real Postgres and Redis in testcontainers (claim races, lease fencing, idempotency races, limiter spacing) | 25s to 45s depending on the build cache |
-| `make test`, `tests/integration` and `tests/contract` | 10 | Every route and response validated against `api/openapi.yaml`; compose config checks (tracing profile, host env isolation) | included above |
+| `make test`, `tests/integration` and `tests/contract` | 11 | Every route and response validated against `api/openapi.yaml`; compose config checks (tracing profile, host env isolation, published worker metrics) | included above |
 | `make e2e` | 15 | The full compose stack: API phase with the worker stopped, then engine phase (delivery, 5xx retries, permanent and exhausted failures, 429 handling, scheduled sends, priority order, cancel before claim, rate per channel) | 72s to 86s in total (API phase under 2s, engine phase 45s to 54s) |
 
 Plus one mock provider test in `cmd/` and two load checker tests in `tests/load/arrivals`. CI runs lint, test and e2e on every push.

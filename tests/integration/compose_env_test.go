@@ -100,3 +100,47 @@ func TestComposeStopGracePeriodOutlastsShutdownTimeout(t *testing.T) {
 		}
 	}
 }
+
+// Sent, failed, attempt and latency metrics live on the worker's /metrics, so
+// a reviewer on the host must reach it. Docker picks the host port: a fixed
+// port refuses `--scale worker=3`, and replicas starting together race for
+// the ports of a range, so one of them can fail to start.
+func TestComposePublishesWorkerMetricsOnAnAssignedPort(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+	requireCompose(t)
+	cmd := exec.Command("docker", "compose", "config", "--format", "json")
+	cmd.Dir = "../.."
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("docker compose config failed: %v\n%s", err, stderr.String())
+	}
+	var cfg struct {
+		Services map[string]struct {
+			Ports []struct {
+				HostIP    string `json:"host_ip"`
+				Target    int    `json:"target"`
+				Published string `json:"published"`
+			} `json:"ports"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(out, &cfg); err != nil {
+		t.Fatalf("decode compose config: %v", err)
+	}
+	for _, p := range cfg.Services["worker"].Ports {
+		if p.Target != 8081 {
+			continue
+		}
+		if p.HostIP != "127.0.0.1" {
+			t.Fatalf("worker metrics published on %q, want 127.0.0.1 only", p.HostIP)
+		}
+		if p.Published != "" {
+			t.Fatalf("worker metrics published on host port %q, want one Docker assigns", p.Published)
+		}
+		return
+	}
+	t.Fatal("worker port 8081 is not published to the host")
+}

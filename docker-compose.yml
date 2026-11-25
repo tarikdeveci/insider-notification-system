@@ -81,6 +81,10 @@ services:
     command: ["worker"]
     # Must exceed SHUTDOWN_TIMEOUT (15s by default); raise it together with that value.
     stop_grace_period: 30s
+    # /metrics with sent, failed, attempt and latency series, on a host port Docker
+    # picks (`docker compose port worker 8081`), so `--scale worker=3` cannot collide.
+    ports:
+      - "127.0.0.1::8081"
     environment:
       <<: *app-env
       REDIS_URL: redis://redis:6379/0
