@@ -2,6 +2,25 @@
 
 An event driven notification service in Go. An HTTP API accepts SMS, email and push notifications, Postgres stores them and doubles as the queue, workers deliver them to an external provider (webhook.site or the bundled mock), and a Redis GCRA limiter admits at most 100 sends per second per channel across all worker replicas.
 
+## For reviewers: where each requirement lives
+
+| Case requirement | Where | Proof |
+|---|---|---|
+| Create, batch up to 1000, status by id and batch, cancel, filtered and paginated list | `internal/api`, `internal/store` | `tests/contract` validates every route against `api/openapi.yaml` |
+| Async workers with a queue | `internal/worker`, claim in `internal/store/queue.go` | `TestCancelVsClaimRace`, `TestClaimUsesFreshTokenFencing` in `internal/store/queue_test.go` |
+| 100 messages per second per channel | `internal/ratelimit` (GCRA in Redis) | `TestNoHalfOpenSecondHoldsMoreThan100`; load test: busiest 1s window 101 to 102 arrivals at the provider |
+| Priority high, normal, low | claim query order | `TestPriorityOrder` in `tests/e2e/engine_test.go` |
+| Content validation | `internal/domain/validate.go` | `validate_test.go` |
+| Idempotency against duplicate sends | `Idempotency-Key` on create and on every provider call | `TestCreateConcurrentSameKey`, `TestCreateBatchConcurrentSameKey`; the mock provider dedups by key |
+| Delivery and retry logic | `internal/worker/retry.go`, breaker, dead letter `failed` plus `/retry` | [Delivery guarantees](#delivery-guarantees), `docs/adr/0002` to `0004` |
+| Metrics, structured logs with correlation id, health | `internal/observability`, `/metrics`, `/healthz`, `/readyz` | [Observability](#observability) |
+| webhook.site provider returning 202 | `internal/provider` | [Using webhook.site](#using-webhooksite) |
+| Bonus: failure handling, scheduled sends, templates, tracing, CI | all built | `.github/workflows/ci.yml` runs lint, test and e2e on every push |
+| Bonus: WebSocket | not built, on purpose | [Deliberately not built](#deliberately-not-built) |
+| Deliverables: compose, OpenAPI, versioned migrations, one command tests | `docker-compose.yml`, `api/openapi.yaml`, `migrations/`, `make test` | |
+
+Where the judgment is: [why Postgres is the queue](docs/adr/0001-postgres-as-the-queue.md), [what a marketer can rely on](#delivery-guarantees), [what I left out and why](#deliberately-not-built), and [where the AI agents were wrong](docs/agent-log.md).
+
 ## Quick start
 
 Requirements: Docker with Compose 2.24 or newer (the optional `env_file` entry needs it). Nothing else is needed to run the system.
@@ -13,7 +32,15 @@ curl -s localhost:8080/readyz    # {"checks":{"postgres":"ok"},"status":"ok"}
 
 The stack starts Postgres, Redis, a one shot `migrate` job, `api` on `127.0.0.1:8080`, `worker` (metrics on a host port Docker assigns, see Observability) and `mock-provider` (inspection port `127.0.0.1:9090`). Stop it with `make down` (also deletes the volume).
 
-To deliver to webhook.site instead of the mock, copy `.env.example` to `.env` and set `PROVIDER_URL=https://webhook.site/<your-uuid>`. `.env` is gitignored; the URL is never logged.
+### Using webhook.site
+
+The bundled `mock-provider` answers like the provider in the case brief (`202` with `messageId`, `status` and `timestamp`), so nothing external is needed. To deliver to webhook.site instead:
+
+1. Open https://webhook.site, then **Edit** the URL's default response: status `202`, `Content-Type: application/json`, body `{"messageId": "6f1d2c1e-8a8b-4b4e-9d5e-2f6b7c8d9e0f", "status": "accepted", "timestamp": "2026-11-25T10:00:00Z"}`.
+2. Copy `.env.example` to `.env` and set `PROVIDER_URL=https://webhook.site/<your-uuid>`. `.env` is gitignored, and the URL is never logged.
+3. `docker compose up -d --build`, send the demo request below, and watch it arrive in webhook.site with an `Idempotency-Key` header equal to the notification id.
+
+Without step 1 webhook.site answers 200 with no `messageId`. That still counts as sent (a 2xx is never retried, so it cannot double send); the row just has no `provider_message_id` and `provider_unparsed_body_total` goes up. The free tier has a small request quota, which is why tests and the load test use the mock.
 
 Running the tests needs Go 1.27 and Docker (integration tests start real Postgres and Redis with testcontainers):
 

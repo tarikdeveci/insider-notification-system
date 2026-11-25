@@ -97,6 +97,11 @@ func TestReturns202WithMessageId(t *testing.T) {
 	if id == "" || body["status"] != "accepted" {
 		t.Fatalf("body = %v", body)
 	}
+	// The case brief's provider contract also carries an ISO 8601 timestamp.
+	ts2, _ := body["timestamp"].(string)
+	if _, err := time.Parse(time.RFC3339, ts2); err != nil {
+		t.Fatalf("timestamp %q: %v", ts2, err)
+	}
 }
 
 func TestRejectsMissingKeyAndBadBody(t *testing.T) {

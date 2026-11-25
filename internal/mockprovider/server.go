@@ -198,7 +198,10 @@ func (s *Server) handleDeliver(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if status >= 200 && status < 300 {
-		writeJSON(w, status, map[string]string{"messageId": messageID, "status": "accepted"})
+		writeJSON(w, status, map[string]string{
+			"messageId": messageID, "status": "accepted",
+			"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		})
 		return
 	}
 	if status == http.StatusTooManyRequests {
