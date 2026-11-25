@@ -31,6 +31,9 @@ e2e: export RETRY_MAX_DELAY=1s
 e2e: export REAPER_INTERVAL=1s
 # Never let a PROVIDER_URL from .env or the shell send e2e traffic to a real provider.
 e2e: export PROVIDER_URL=http://mock-provider:9090/
+# Compose reads API_PORT from .env too; exporting it keeps the published port and the URL the tests call in step.
+e2e: export API_PORT ?= 8080
+e2e: export E2E_BASE_URL ?= http://127.0.0.1:$(API_PORT)
 e2e:
 	docker compose up -d --build; rc=$$?; \
 	if [ $$rc -eq 0 ]; then docker compose stop worker; rc=$$?; fi; \

@@ -30,7 +30,7 @@ docker compose up -d --build     # or: make up
 curl -s localhost:8080/readyz    # {"checks":{"postgres":"ok"},"status":"ok"}
 ```
 
-The stack starts Postgres, Redis, a one shot `migrate` job, `api` on `127.0.0.1:8080`, `worker` (metrics on a host port Docker assigns, see Observability) and `mock-provider` (inspection port `127.0.0.1:9090`). Stop it with `make down` (also deletes the volume).
+The stack starts Postgres, Redis, a one shot `migrate` job, `api` on `127.0.0.1:8080`, `worker` (metrics on a host port Docker assigns, see Observability) and `mock-provider` (inspection port `127.0.0.1:9090`). Stop it with `make down` (also deletes the volume). If 8080 is taken on your machine, start it with `API_PORT=18080 docker compose up -d --build` (or set `API_PORT` in `.env`) and use that port in the commands below; `make e2e` follows the same variable.
 
 ### Using webhook.site
 

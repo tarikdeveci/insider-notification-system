@@ -144,3 +144,54 @@ func TestComposePublishesWorkerMetricsOnAnAssignedPort(t *testing.T) {
 	}
 	t.Fatal("worker port 8081 is not published to the host")
 }
+
+// Port 8080 is often taken on a reviewer's machine, so API_PORT moves the
+// API's host port without editing the compose file. It stays on loopback.
+func TestComposeAPIHostPortFollowsAPIPort(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+	requireCompose(t)
+	for _, tc := range []struct{ env, want string }{
+		{"API_PORT=", "8080"},
+		{"API_PORT=18080", "18080"},
+	} {
+		cmd := exec.Command("docker", "compose", "config", "--format", "json")
+		cmd.Dir = "../.."
+		cmd.Env = append(os.Environ(), tc.env)
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s: docker compose config failed: %v\n%s", tc.env, err, stderr.String())
+		}
+		var cfg struct {
+			Services map[string]struct {
+				Ports []struct {
+					HostIP    string `json:"host_ip"`
+					Target    int    `json:"target"`
+					Published string `json:"published"`
+				} `json:"ports"`
+			} `json:"services"`
+		}
+		if err := json.Unmarshal(out, &cfg); err != nil {
+			t.Fatalf("decode compose config: %v", err)
+		}
+		found := false
+		for _, p := range cfg.Services["api"].Ports {
+			if p.Target != 8080 {
+				continue
+			}
+			found = true
+			if p.HostIP != "127.0.0.1" {
+				t.Fatalf("%s: api published on %q, want 127.0.0.1 only", tc.env, p.HostIP)
+			}
+			if p.Published != tc.want {
+				t.Fatalf("%s: api published on host port %q, want %q", tc.env, p.Published, tc.want)
+			}
+		}
+		if !found {
+			t.Fatalf("%s: api port 8080 is not published to the host", tc.env)
+		}
+	}
+}
