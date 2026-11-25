@@ -126,10 +126,10 @@ What a marketer can rely on:
 - **At least once, not exactly once.** If a worker dies after the provider accepted a message but before the row is marked `sent`, the reaper requeues it and it is sent again. Every provider call carries `Idempotency-Key: <notification id>` so a provider that honors it (the mock does) drops the duplicate. Exactly once is not claimed.
 - **At most 100 sends admitted per second per channel**, across all worker replicas, because the limit lives in Redis and the clock is Redis's. Measured at the provider, network jitter adds a few percent (see the load test).
 - **High before normal before low** when rows are claimed. Rows claimed together go to concurrent senders, so within one claim a lower priority row can finish first.
-- **Retries are bounded.** Up to 8 real send attempts with exponential backoff and full jitter (base 2s, cap 10 min; about 4 minutes worst case across the 7 waits). 429 responses do not use an attempt but honor `Retry-After`; 408 and 425 are retried like a 5xx. Retry times are set on the database clock (`now() + delay`), so a skewed worker clock cannot move them.
-- **Nothing is sent once it is 24 hours old** (`MAX_DELIVERY_AGE`), measured from `scheduled_at` or `created_at`, or from the last manual retry, which starts a fresh window. A flash sale SMS a day late is worse than none. The claim checks the age on the database clock, so a pending row past it fails as `expired` without a send. An attempt that ends past it schedules no new retry, and a 429 past it fails and keeps its attempt.
+- **Retries are bounded.** Up to 8 real send attempts with exponential backoff and full jitter (base 2s, cap 10 min; about 4 minutes worst case across the 7 waits). 429 responses do not use an attempt but honor `Retry-After`, clamped to 1s..60s so a hostile or broken provider cannot park a message for hours; 408 and 425 are retried like a 5xx. Retry times are set on the database clock (`now() + delay`), so a skewed worker clock cannot move them.
+- **Nothing is sent once it is 24 hours old** (`MAX_DELIVERY_AGE`), measured from `scheduled_at` or `created_at`, or from the last manual retry, which starts a fresh window. A flash sale SMS a day late is worse than none. The age is judged on the database clock throughout: the claim fails a pending row past it as `expired` without a send, the attempt start checks again after the rate limiter wait (a row that aged out while waiting fails unsent), an attempt that ends past it schedules no new retry, and a 429 past it fails and keeps its attempt.
 - **Failures are visible and recoverable.** `failed` is the dead letter state: list it with `status=failed`, read every attempt with its HTTP status and error, and requeue with `/retry`. The attempt history has an explicit write order, and a lease that ran out mid attempt leaves a `lease_expired` entry, so every send the provider may have seen is on record.
-- **Cancel is safe.** It only succeeds while the row is still pending; a row already being sent returns 409.
+- **Cancel is safe.** It only succeeds while the row is still pending; a row already being sent returns 409. One exception: a worker frozen for longer than its 30 second lease (a VM pause, say) between starting an attempt and sending can wake after the reaper requeued the row and a cancel succeeded, and still send it. Lease fencing stops its database writes, not its provider call.
 - **If Redis is down, sending pauses** (the limiter fails closed) and the worker `/readyz` returns 503, instead of risking provider limits during a campaign. The API keeps accepting notifications, because its readiness depends on Postgres only. A failing limiter backs the channel loop off (1s, doubling to 16s), released rows wait out the same pause, and the worker logs one warning per outage instead of one per row, so an outage costs a few queries per second, not a hot loop.
 - **Shutdown and timeouts fit together.** The worker refuses to start when `RATELIMIT_MAX_WAIT` plus the 5s provider timeout and a 10s margin exceed the 30s claim lease, so a row cannot outlive its lease while it waits. Compose gives the API 20s and the worker 30s to drain on stop (Docker's default is 10s). The provider client has its own HTTP transport with an idle pool sized for every sender, not the default of 2 connections per host.
 
@@ -158,11 +158,11 @@ What a marketer can rely on:
 
 ## Tests and numbers
 
-294 test functions, all run with `-race`:
+300 test functions, all run with `-race`:
 
 | Suite | Tests | What it covers | Time on my machine |
 |---|---|---|---|
-| `make test`, internal packages | 265 | Domain validation, retry policy, breaker, templates, provider classification; store, limiter and API tests against real Postgres and Redis in testcontainers (claim races, lease fencing, idempotency races, limiter spacing) | 25s to 45s depending on the build cache |
+| `make test`, internal packages | 271 | Domain validation, retry policy, breaker, templates, provider classification; store, limiter and API tests against real Postgres and Redis in testcontainers (claim races, lease fencing, idempotency races, limiter spacing) | 25s to 45s depending on the build cache |
 | `make test`, `tests/integration` and `tests/contract` | 11 | Every route and response validated against `api/openapi.yaml`; compose config checks (tracing profile, host env isolation, published worker metrics) | included above |
 | `make e2e` | 15 | The full compose stack: API phase with the worker stopped, then engine phase (delivery, 5xx retries, permanent and exhausted failures, 429 handling, scheduled sends, priority order, cancel before claim, rate per channel) | 72s to 86s in total (API phase under 2s, engine phase 45s to 54s) |
 
@@ -207,6 +207,8 @@ Plus one mock provider test in `cmd/` and two load checker tests in `tests/load/
 - **A claim interrupted by shutdown** can leave its rows in `processing` until the reaper returns them (the 30 second lease plus one reaper tick, 5 seconds by default).
 - **`queue_depth` is absent from `/metrics` until the first successful refresh** after the API starts.
 - **The e2e rate check measures wall clock rates,** so a very slow host can make it flaky. CI on Linux is the reference.
+- **The limiter admits sends; it does not time the wire.** A permit is taken before the attempt starts in Postgres, so if the database stalls, rows admitted during the stall reach the provider together when it recovers, and one second on the wire can exceed 100. Taking the permit after the attempt start would fix it, but then a limiter refusal has to hand back a counted attempt.
+- **`Retry-After` on a 503 is ignored**; the 503 uses the normal backoff. Only 429 reads the header.
 - The OpenAPI spec does not document the router's own 405 and unmatched route 404 responses.
 
 Left as they are on purpose after the red team review (see `docs/agent-log.md`):

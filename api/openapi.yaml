@@ -312,9 +312,9 @@ paths:
         status=failed), for example after a provider outage longer than the
         retry budget. A failed notification becomes pending again with attempts
         reset to 0 and next_attempt_at now. last_error is kept for history. The
-        max delivery age is still measured from COALESCE(scheduled_at,
-        created_at), so an old notification gets one fresh attempt and then
-        expires if it fails again. 200 returns the updated notification. 409
+        retry starts a fresh max delivery age window and a full attempt
+        budget, measured from the time of the retry. 200 returns the updated
+        notification. 409
         means it is not failed. 404 means no such notification (a malformed id
         too).
       parameters:
@@ -699,7 +699,9 @@ components:
             braces, optional spaces, a name matching [A-Za-z_][A-Za-z0-9_]*,
             optional spaces, two closing braces, for example {{ name }}. There
             is no escaping, no filter and no nesting. A name may repeat. An
-            unclosed placeholder or an invalid name is rejected with 422.
+            unclosed placeholder or an invalid name is rejected with 422, and
+            so is a body with more than 100 placeholders or more than 50
+            distinct names (a request carries at most 50 template_vars).
             Rendering is a single pass, so a substituted value that contains
             braces stays literal.
     Template:

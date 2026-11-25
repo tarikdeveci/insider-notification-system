@@ -197,6 +197,41 @@ func TestClientBodyLimit64KiB(t *testing.T) {
 	}
 }
 
+// A provider that keeps streaming after the answer must not hold a sender
+// slot until the request timeout: the client drains a bounded amount for
+// connection reuse and then closes the body.
+func TestClientDoesNotDrainAnEndlessBody(t *testing.T) {
+	stop := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = io.WriteString(w, `{"messageId":"m-1"}`)
+		pad := strings.Repeat(" ", 32<<10)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			if _, err := io.WriteString(w, pad); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+		}
+	}))
+	defer srv.Close()
+	defer close(stop)
+	began := time.Now()
+	res := newTestClient(t, srv.URL, WithTimeout(3*time.Second)).Send(context.Background(), Message{ID: "1"})
+	if took := time.Since(began); took > time.Second {
+		t.Fatalf("Send took %v draining an endless body", took)
+	}
+	if res.Class != Success || res.MessageID != "m-1" {
+		t.Fatalf("got %+v", res)
+	}
+}
+
 func TestNewClientValidatesURL(t *testing.T) {
 	bad := []string{
 		"", "ftp://host/x", "file:///etc/passwd", "http://", "http:///path",

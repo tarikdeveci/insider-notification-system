@@ -144,7 +144,9 @@ func (c *Client) Send(ctx context.Context, m Message) Result {
 	}
 	// A read error leaves a partial body, which fails to parse and is counted as unparsed.
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
-	_, _ = io.Copy(io.Discard, resp.Body)
+	// Drain a bounded tail so a short body keeps the connection reusable; a
+	// longer one is cut off by Close instead of holding the sender until timeout.
+	_, _ = io.CopyN(io.Discard, resp.Body, maxBodyBytes)
 	_ = resp.Body.Close()
 
 	res, unparsed := classifyAt(time.Now(), resp.StatusCode, resp.Header, body)

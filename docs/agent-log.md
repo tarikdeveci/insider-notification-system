@@ -298,3 +298,18 @@ Left on purpose, with reasons in the README: zero burst GCRA (finding 7), the tr
 Environment: Docker Desktop crashed twice during the fixes (the engine pipe vanished, then a 500 from the daemon). Killing the Docker processes, `wsl --shutdown` and moving the stale `run` folder aside brought it back both times. The worker agent stalled after the second crash; the controller finished its last findings in the same worktree.
 
 Gate: passed on `main` at 12704ac. `make test` (with -race): all packages ok. `make lint`: 0 issues. `make e2e`: API phase 1.4s, engine phase 44.1s. `make load`: 10,000 sent, 0 failed, 93.8 per second per channel, busiest 1 second window 101 to 102 arrivals, PASS.
+
+## Codex second opinion: hardcore read only review (25 Nov 2026)
+
+OpenAI Codex (read only, high reasoning) reviewed the repository against the case requirements after the red team fixes. It reported 10 findings (3 high, 5 medium, 2 low). The controller checked each one in the code; six were real defects and were fixed test first in one commit:
+
+- The reaper cast elapsed milliseconds to `int`, so one row stuck in `processing` for about 25 days failed the whole reaper statement on every pass and no lease was ever reclaimed again. `duration_ms` is now clamped before the cast, in the reaper and in `FinishAttempt`.
+- A provider `messageId` with a NUL byte made Postgres reject the `sent` write, and the reaper sent the accepted message again until it was exhausted. An id with a control character or over 256 bytes is now dropped and counted as unparsed.
+- The age was checked at claim time only, before the rate limiter wait, so a row could be sent up to `RATELIMIT_MAX_WAIT` past `MAX_DELIVERY_AGE`; and the decision after an attempt compared database timestamps with the worker clock. The attempt start now rechecks the age on the database clock (an aged out row fails unsent), and the retry decision uses the database time from `StartAttempt` plus elapsed worker time.
+- The provider client drained a response body with no bound after its 64 KiB read, so an endless body held a sender until the 5s timeout. The drain is bounded now.
+- A template could use more distinct placeholders than the 50 `template_vars` a request may carry, so it was created but could never render. It is a 422 now.
+- The OpenAPI text for `POST /retry` still described the age window from before migration 0004.
+
+Not changed in code, documented in the README instead: the permit is taken before the attempt start, so a database stall can bunch admitted sends on the wire (finding 2); a worker frozen past its lease can still send a row that was cancelled after the reaper requeued it, which fencing cannot stop at the provider (finding 3); `Retry-After` is clamped to 60s on 429 on purpose and ignored on 503 (finding 7).
+
+Gate: `make test` (with -race): all packages ok, 300 test functions. `make lint`: 0 issues. `make e2e`: API phase 1.5s, engine phase 42.6s.

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -67,8 +68,11 @@ func (s *server) createTemplate(w http.ResponseWriter, r *http.Request) {
 		bad("body", "must be 1 to 10000 characters")
 	} else if domain.HasControl(req.Body, true) {
 		bad("body", "must not contain control characters")
-	} else if _, err := tpl.Parse(req.Body); err != nil {
+	} else if names, err := tpl.Parse(req.Body); err != nil {
 		bad("body", err.Error())
+	} else if len(names) > domain.MaxTemplateVars {
+		// A request carries at most MaxTemplateVars vars, so such a template could never render.
+		bad("body", fmt.Sprintf("must use at most %d distinct placeholders", domain.MaxTemplateVars))
 	} else if ch.Valid() && tpl.LiteralRunes(req.Body) > domain.ContentLimit(ch) {
 		bad("body", "literal text exceeds the content limit of the channel")
 	}

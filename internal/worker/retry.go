@@ -88,6 +88,19 @@ type Outcome struct {
 	Reason          string
 }
 
+// Expired reports whether now is at or past MaxAge, measured from scheduled_at
+// (else created_at) or from a later manual retry, as the claim and reaper do.
+func (p Policy) Expired(created time.Time, scheduled, requeued *time.Time, now time.Time) bool {
+	origin := created
+	if scheduled != nil {
+		origin = *scheduled
+	}
+	if requeued != nil && requeued.After(origin) {
+		origin = *requeued
+	}
+	return !now.Before(origin.Add(p.MaxAge))
+}
+
 // Decide maps one provider result to an Outcome. It reads no clock: Now and
 // the jitter source are injected.
 func (p Policy) Decide(in Input, rnd func() float64) Outcome {
@@ -97,14 +110,7 @@ func (p Policy) Decide(in Input, rnd func() float64) Outcome {
 	case provider.Permanent:
 		return Outcome{Action: ActionFail, Reason: ReasonPermanent}
 	}
-	origin := in.CreatedAt
-	if in.ScheduledAt != nil {
-		origin = *in.ScheduledAt
-	}
-	if in.RequeuedAt != nil && in.RequeuedAt.After(origin) {
-		origin = *in.RequeuedAt
-	}
-	if !in.Now.Before(origin.Add(p.MaxAge)) {
+	if p.Expired(in.CreatedAt, in.ScheduledAt, in.RequeuedAt, in.Now) {
 		return Outcome{Action: ActionFail, Reason: ReasonExpired}
 	}
 	if in.Result.Class == provider.Throttled {

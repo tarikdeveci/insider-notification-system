@@ -181,6 +181,13 @@ type FinishParams struct {
 const finishTail = `, lease_token = NULL, locked_until = NULL, updated_at = now()
  WHERE id = $1::uuid AND lease_token = $2::uuid AND status = 'processing'`
 
+// durationMS is the SQL for the milliseconds since start, clamped to the int
+// range of notification_attempts.duration_ms. Unclamped, a row whose attempt
+// began about 25 days ago overflows the cast and fails the whole statement.
+func durationMS(start string) string {
+	return `LEAST(2147483647, GREATEST(0, extract(epoch FROM (now() - ` + start + `)) * 1000))::int`
+}
+
 // FinishAttempt applies the token fenced result UPDATE and inserts the
 // notification_attempts row in one transaction. If the UPDATE matches zero
 // rows it rolls back, inserts nothing and returns ErrLeaseLost.
@@ -220,7 +227,7 @@ func (s *Store) FinishAttempt(ctx context.Context, p FinishParams) error {
 	_, err = tx.Exec(ctx,
 		`INSERT INTO notification_attempts (notification_id, attempt_no, started_at, finished_at, http_status, error, duration_ms)
 		 VALUES ($1::uuid, $2, $3::timestamptz, now(), NULLIF($4::int, 0), NULLIF($5::text, ''),
-		         GREATEST(0, (extract(epoch FROM (now() - $3::timestamptz)) * 1000)::int))`,
+		         ` + durationMS("$3::timestamptz") + `)`,
 		p.ID, p.AttemptNo, p.StartedAt, p.HTTPStatus, p.AttemptError)
 	if err != nil {
 		return fmt.Errorf("finish attempt insert: %w", err)
@@ -284,7 +291,7 @@ func (s *Store) Reap(ctx context.Context, maxAge time.Duration) ([]ReapedRow, er
 		 hist AS (
 		   INSERT INTO notification_attempts (notification_id, attempt_no, started_at, finished_at, error, duration_ms)
 		   SELECT id, old_attempts, old_updated_at, now(), 'lease_expired',
-		          GREATEST(0, (extract(epoch FROM (now() - old_updated_at)) * 1000)::int)
+		          ` + durationMS("old_updated_at") + `
 		   FROM upd WHERE old_attempts > 0)
 		 SELECT id::text, channel, status, last_error FROM upd`,
 		maxAge.Seconds(), reapErrExpired, reapErrExhausted)

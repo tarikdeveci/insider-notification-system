@@ -22,6 +22,9 @@ import (
 const (
 	releaseTimeout = 5 * time.Second
 	maxLastError   = 512
+	// expiredBeforeSend is the attempt error of a row that aged out while it
+	// waited for a permit; nothing reached the provider.
+	expiredBeforeSend = "max delivery age reached before send"
 )
 
 // Release reasons logged when a claimed row goes back unsent.
@@ -252,6 +255,17 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, lb *limit
 	}
 	log = log.With("attempt", attempt)
 	span.SetAttributes(attribute.Int("notification.attempt", attempt))
+	// Age is judged on the database clock, like the claim and the reaper:
+	// startedAt is its time at StartAttempt, carried forward by the worker's
+	// elapsed time, so a skewed worker clock cannot expire or extend a row.
+	startedLocal := e.now()
+	dbNow := func() time.Time { return startedAt.Add(e.now().Sub(startedLocal)) }
+	if e.set.Policy.Expired(row.CreatedAt, row.ScheduledAt, row.RequeuedAt, startedAt) {
+		// The claim checked the age, but the limiter wait came after it.
+		e.expireUnsent(drain, log, row, attempt, startedAt)
+		span.SetStatus(codes.Error, ReasonExpired)
+		return
+	}
 
 	began := e.now()
 	sendCtx, send := e.tracer.Start(drain, "provider.send", trace.WithSpanKind(trace.SpanKindClient),
@@ -274,7 +288,7 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, lb *limit
 
 	out := e.set.Policy.Decide(Input{
 		Result: res, Attempts: attempt, MaxAttempts: row.MaxAttempts,
-		CreatedAt: row.CreatedAt, ScheduledAt: row.ScheduledAt, RequeuedAt: row.RequeuedAt, Now: e.now(),
+		CreatedAt: row.CreatedAt, ScheduledAt: row.ScheduledAt, RequeuedAt: row.RequeuedAt, Now: dbNow(),
 	}, e.rnd)
 
 	fp := store.FinishParams{
@@ -310,6 +324,25 @@ func (e *Engine) process(ctx, drain context.Context, log *slog.Logger, lb *limit
 	case ActionFail:
 		e.obs.Failed(ch, out.Reason)
 	}
+}
+
+// expireUnsent fails a started attempt as expired without sending it: the row
+// passed MAX_DELIVERY_AGE while it waited for a permit.
+func (e *Engine) expireUnsent(drain context.Context, log *slog.Logger, row store.QueueRow, attempt int, startedAt time.Time) {
+	err := e.q.FinishAttempt(drain, store.FinishParams{
+		ID: row.ID, Token: row.LeaseToken, Action: store.FinishFail, AttemptNo: attempt, StartedAt: startedAt,
+		AttemptError: expiredBeforeSend, LastError: ReasonExpired + ": " + expiredBeforeSend,
+	})
+	if errors.Is(err, store.ErrLeaseLost) {
+		log.Warn("lease lost before result write, dropping result", "result", ReasonExpired)
+		return
+	}
+	if err != nil {
+		log.Error("finish attempt failed", append(observability.ErrAttrs(err), "result", ReasonExpired)...)
+		return
+	}
+	log.Warn("attempt expired before send", "reason", ReasonExpired)
+	e.obs.Failed(string(row.Channel), ReasonExpired)
 }
 
 // release returns an unstarted row to pending. It runs on a context detached

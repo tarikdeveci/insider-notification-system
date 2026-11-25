@@ -99,7 +99,7 @@ func classifyAt(now time.Time, status int, header http.Header, body []byte) (Res
 		var parsed struct {
 			MessageID string `json:"messageId"`
 		}
-		if err := json.Unmarshal(body, &parsed); err != nil || parsed.MessageID == "" {
+		if err := json.Unmarshal(body, &parsed); err != nil || !storableMessageID(parsed.MessageID) {
 			return res, true
 		}
 		res.MessageID = parsed.MessageID
@@ -122,6 +122,24 @@ func classifyAt(now time.Time, status int, header http.Header, body []byte) (Res
 	}
 	res.Detail = "provider responded with status " + strconv.Itoa(status)
 	return res, false
+}
+
+// maxMessageIDBytes bounds the provider id kept on the notification row.
+const maxMessageIDBytes = 256
+
+// storableMessageID reports whether id is non-empty, at most maxMessageIDBytes
+// and free of control characters. Postgres text rejects NUL, so an id carrying
+// one would fail the sent write and the reaper would send the message again.
+func storableMessageID(id string) bool {
+	if id == "" || len(id) > maxMessageIDBytes {
+		return false
+	}
+	for _, r := range id {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // parseRetryAfter reads delta seconds or an HTTP date and clamps to 1s..60s.

@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -661,6 +662,35 @@ func TestReaperFailsWhenAttemptsExhaustedOrExpired(t *testing.T) {
 	// scheduled_at 10 minutes ago is inside the one hour age bound, so it is requeued, not failed.
 	if r := got[scheduled.ID]; r.Status != domain.StatusPending || r.Reason != "" {
 		t.Fatalf("scheduled row measured from created_at: %+v", r)
+	}
+}
+
+// duration_ms is an int column, which holds about 24.8 days of milliseconds. A
+// row stuck in processing for longer (a long outage, a restored backup) must
+// not make the reaper statement fail, or no lease would ever be reclaimed.
+func TestReaperSurvivesAnAttemptOlderThanTheDurationColumn(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+	old, tok := claimOne(t, s, pool)
+	if _, _, err := s.StartAttempt(ctx, old.ID, tok); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, pool, `UPDATE notifications SET updated_at = now() - interval '30 days' WHERE id = $1::uuid`, old.ID)
+	expireLease(t, pool, old.ID)
+	other, _ := claimOne(t, s, pool)
+	expireLease(t, pool, other.ID)
+
+	reaped, err := s.Reap(ctx, 24*time.Hour)
+	if err != nil || len(reaped) != 2 {
+		t.Fatalf("reap: %v %+v", err, reaped)
+	}
+	var ms int64
+	if err := pool.QueryRow(ctx,
+		`SELECT duration_ms FROM notification_attempts WHERE notification_id = $1::uuid`, old.ID).Scan(&ms); err != nil {
+		t.Fatal(err)
+	}
+	if ms != math.MaxInt32 {
+		t.Fatalf("duration_ms %d, want it capped at %d", ms, math.MaxInt32)
 	}
 }
 

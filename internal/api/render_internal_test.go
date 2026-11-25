@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -93,6 +94,22 @@ func TestCreateTemplateRejectsTooManyPlaceholders(t *testing.T) {
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("POST", "/v1/templates", strings.NewReader(body)))
 	if rr.Code != 422 || !strings.Contains(rr.Body.String(), "too many placeholders") {
+		t.Fatalf("%d %s", rr.Code, rr.Body)
+	}
+}
+
+// A request carries at most 50 template_vars, so a template that needs more
+// distinct names could never render. It is refused at create time.
+func TestCreateTemplateRejectsMoreDistinctNamesThanARequestCanFill(t *testing.T) {
+	h := NewServer(Deps{Logger: discardLog()})
+	var b strings.Builder
+	for i := 0; i <= domain.MaxTemplateVars; i++ {
+		fmt.Fprintf(&b, "{{v%d}}", i)
+	}
+	body := `{"name":"n","channel":"email","body":"` + b.String() + `"}`
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest("POST", "/v1/templates", strings.NewReader(body)))
+	if rr.Code != 422 || !strings.Contains(rr.Body.String(), "at most 50 distinct placeholders") {
 		t.Fatalf("%d %s", rr.Code, rr.Body)
 	}
 }

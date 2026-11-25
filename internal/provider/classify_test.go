@@ -34,6 +34,23 @@ func TestClassify2xxIsSuccess(t *testing.T) {
 	}
 }
 
+// Postgres text rejects NUL, so storing such an id would fail the sent write
+// and the reaper would send an accepted message again. A control character or
+// an id longer than 256 bytes is dropped and counted as unparsed instead.
+func TestClassify2xxDropsAnUnstorableMessageID(t *testing.T) {
+	long := `{"messageId":"` + strings.Repeat("a", maxMessageIDBytes+1) + `"}`
+	for _, body := range []string{`{"messageId":"\u0000"}`, `{"messageId":"ab\u0000c"}`, `{"messageId":"a\nb"}`, long} {
+		r, unparsed := classifyAt(fixedNow, 202, nil, []byte(body))
+		if r.Class != Success || r.MessageID != "" || !unparsed {
+			t.Fatalf("body %.40q: got class %v id %q unparsed=%v", body, r.Class, r.MessageID, unparsed)
+		}
+	}
+	ok := strings.Repeat("a", maxMessageIDBytes)
+	if r, unparsed := classifyAt(fixedNow, 202, nil, []byte(`{"messageId":"`+ok+`"}`)); unparsed || r.MessageID != ok {
+		t.Fatalf("a %d byte id must be kept: unparsed=%v", maxMessageIDBytes, unparsed)
+	}
+}
+
 func TestClassify429(t *testing.T) {
 	cases := []struct {
 		name   string
